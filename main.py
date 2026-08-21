@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v2.6
-yfinance + dayanıklı KAP + sert prompt
+Money Maker — Lira'ya Sor API (Gemini) v2.7
+Hata gizleme + doğal Lira fallback
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ KAP_HEADERS = {
 
 app = FastAPI(
     title="Money Maker Lira'ya Sor (Gemini)",
-    version="2.6",
+    version="2.7",
     description="Akıllı Lira – Gemini + yfinance + KAP"
 )
 
@@ -127,7 +127,6 @@ def get_stock_info(ticker: str) -> str:
 
 
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
-    """Son X günün KAP ODA bildirimlerini çeker (retry'lı)"""
     to_d = date.today()
     from_d = to_d - timedelta(days=days)
     payload = {
@@ -138,21 +137,17 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     }
 
     data = []
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            with httpx.Client(timeout=15, follow_redirects=True) as client:
+            with httpx.Client(timeout=12, follow_redirects=True) as client:
                 r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, list):
                         break
-                elif r.status_code in (429, 503):
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                else:
-                    break
+                time.sleep(1.5)
         except Exception:
-            time.sleep(1.5 * (attempt + 1))
+            time.sleep(1)
             continue
 
     if not data:
@@ -173,34 +168,44 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     if not relevant:
         return ""
 
-    relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:5]
+    relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:4]
 
     lines = [f"**{ticker} – Son KAP Bildirimleri:**"]
     for d in relevant:
         when = (d.get("publishDate") or "")[:16]
         subj = (d.get("subject") or "").strip()
-        summ = (d.get("summary") or "").strip()[:160]
-        idx = d.get("disclosureIndex")
-        link = f"https://www.kap.org.tr/tr/Bildirim/{idx}" if idx else ""
+        summ = (d.get("summary") or "").strip()[:140]
         lines.append(f"- [{when}] {subj}")
         if summ:
             lines.append(f"  {summ}")
-        if link:
-            lines.append(f"  {link}")
     return "\n".join(lines)
 
 
 SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, net ve biraz esprili bir finans asistanısın.
 
-Kurallar (çok önemli):
+Kurallar:
 - "kanki", "kankitom" diyebilirsin. Asla "hocam" deme.
 - Yatırım tavsiyesi verebilirsin, riskleri de söyle.
-- Sana canlı fiyat veya KAP bildirimi geldiyse onları kullan ve yorumla.
-- Veri gelmezse "veri yok", "siteye bak", "kap.org.tr", "aracı kurum", "mobil uygulama" gibi şeyler SÖYLEME.
-- Veri yoksa sadece genel bilginle kısa cevap ver, uzatma.
-- Cevapları kısa ve net tut.
+- Sana canlı fiyat veya KAP bildirimi geldiyse onları kullan.
+- Veri gelmezse site önerme, "kap.org.tr" deme, "aracı kurum" deme.
+- Cevapları kısa ve doğal tut, arkadaş gibi konuş.
 """
+
+
+def natural_fallback(soru: str, tickers: list[str]) -> str:
+    """Gemini çökünce Lira kendi ağzından cevap versin"""
+    if tickers:
+        t = tickers[0]
+        return (
+            f"Kanki şu an biraz yoğunum, {t} için net rakam ve son haberleri "
+            f"hemen çekemedim. Biraz sonra tekrar sorarsan bakarız. "
+            f"Genel olarak {t} volatil bir hisse, stop’unu ihmal etme."
+        )
+    return (
+        "Kanki şu an sistem biraz yoğun, net cevap veremiyorum. "
+        "Biraz sonra tekrar dene, hemen bakarım."
+    )
 
 
 # ================== ENDPOINTLER ==================
@@ -211,7 +216,7 @@ def health():
         "gemini": bool(GEMINI_API_KEY),
         "secret": bool(API_SECRET_KEY),
         "model": MODEL_NAME,
-        "version": "2.6",
+        "version": "2.7",
         "yfinance": True,
         "kap": True
     }
@@ -221,17 +226,14 @@ def health():
 def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     _check_secret(x_api_key)
 
-    client = _get_client()
     soru = req.soru.strip()
-
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    for t in tickers[:2]:  # en fazla 2 hisse (rate limit için)
+    for t in tickers[:2]:
         price_info = get_stock_info(t)
         if price_info:
             extra_parts.append(price_info)
-
         kap_info = fetch_kap_for_ticker(t, days=5)
         if kap_info:
             extra_parts.append(kap_info)
@@ -246,40 +248,40 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 
     full_prompt = SYSTEM_PROMPT + extra_context
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[
-                {"role": "user", "parts": [{"text": full_prompt}]},
-                {"role": "model", "parts": [{"text": "Tamam kanki, Lira hazır. Sor."}]},
-                {"role": "user", "parts": [{"text": soru}]},
-            ],
-            config={
-                "temperature": 0.5,
-                "max_output_tokens": 1800,
-            }
-        )
+    # Gemini'yi 2 kere dene, olmazsa doğal fallback
+    cevap = None
+    for attempt in range(2):
+        try:
+            client = _get_client()
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=[
+                    {"role": "user", "parts": [{"text": full_prompt}]},
+                    {"role": "model", "parts": [{"text": "Tamam kanki, Lira hazır. Sor."}]},
+                    {"role": "user", "parts": [{"text": soru}]},
+                ],
+                config={
+                    "temperature": 0.5,
+                    "max_output_tokens": 1800,
+                }
+            )
+            cevap = (response.text or "").strip()
+            if cevap:
+                break
+        except Exception:
+            if attempt == 0:
+                time.sleep(1.5)
+            continue
 
-        cevap = (response.text or "").strip()
-        if not cevap:
-            raise HTTPException(status_code=502, detail="Gemini boş cevap döndü")
-
-    except Exception as e:
-        err = str(e)
-        if "API key" in err or "401" in err or "403" in err:
-            raise HTTPException(status_code=502, detail="Gemini API Key hatası.")
-        raise HTTPException(status_code=502, detail=f"Gemini hatası: {err[:300]}")
-
-    kaynak = "gemini"
-    if extra_parts:
-        kaynak = "gemini+data"
+    if not cevap:
+        cevap = natural_fallback(soru, tickers)
 
     return SorResponse(
         ok=True,
         soru=soru,
         cevap=cevap,
         thread_id="gemini",
-        kaynak=kaynak
+        kaynak="gemini+data" if extra_parts else "gemini"
     )
 
 
@@ -287,7 +289,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 @app.get("/widget", response_class=HTMLResponse)
 def root():
     return HTMLResponse(
-        "<h2>Lira API v2.6</h2>"
+        "<h2>Lira API v2.7</h2>"
         "<p>POST /api/lira-sor</p>"
         "<p><a href='/health'>/health</a></p>"
     )
