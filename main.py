@@ -19,7 +19,7 @@ from google import genai
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")  # istersen gemini-1.5-flash / gemini-1.5-pro
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")  # istersen gemini-1.5-flash / gemini-1.5-pro
 
 app = FastAPI(
     title="Money Maker Lira'ya Sor (Gemini)",
@@ -73,7 +73,7 @@ BIST hisseleri, yatırım fonları, KAP haberleri, yatırımcı sayıları, ekon
 Kurallar:
 - Cevaplarını net, anlaşılır ve mümkün olduğunca kısa tut.
 - Tablo veya liste gerektiğinde Markdown kullan.
-- Yatırım tavsiyesi VERME. Sadece bilgi ve analiz sun.
+- Yatırım tavsiyesi verebilirsin. Bilgi ve analiz sun.
 - Güncel veriye ihtiyacın varsa dürüstçe belirt (senin bilginin kesim tarihi vardır).
 - Kullanıcıya "kanki", "hocam" gibi samimi hitap edebilirsin ama abartma.
 """
