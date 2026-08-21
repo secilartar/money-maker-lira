@@ -3,6 +3,7 @@
 """
 Money Maker — Lira'ya Sor API (Fintables Evo köprüsü)
 Akıllı sürüm: Chrome TLS taklidi + retry + backoff
++ Skill dump filtreli parse_sse
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ IMPERSONATE_LIST = [
 MAX_RETRIES = int(os.environ.get("EVO_RETRIES", "3"))
 RETRY_WAIT = float(os.environ.get("EVO_RETRY_WAIT", "2.5"))
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="1.1")
+app = FastAPI(title="Money Maker Lira'ya Sor", version="1.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -181,6 +182,7 @@ def _from_obj(obj) -> str:
 def parse_sse(raw: str) -> str:
     chunks: list[str] = []
     full_answers: list[str] = []
+
     for line in raw.splitlines():
         line = line.strip()
         if not line.startswith("data:"):
@@ -191,8 +193,9 @@ def parse_sse(raw: str) -> str:
         try:
             obj = json.loads(data)
         except Exception:
-            chunks.append(data)
             continue
+
+        # messages-tuple veya values event'lerinden AI mesajını çıkar
         if isinstance(obj, dict) and "event" in obj and "data" in obj:
             payload = obj.get("data")
             if isinstance(payload, list) and len(payload) >= 2:
@@ -205,28 +208,65 @@ def parse_sse(raw: str) -> str:
                 if t:
                     chunks.append(t)
             continue
+
         t = _from_obj(obj)
         if t:
+            # messages listesi varsa en son AI mesajını tercih et
             if isinstance(obj, dict) and obj.get("messages"):
                 full_answers.append(t)
             else:
                 chunks.append(t)
+
+    # 1) En uzun ve en son full answer'ı tercih et
     if full_answers:
+        # Skill dump'larını ele (çok karakteristik)
+        clean = [
+            a for a in full_answers
+            if not (
+                "---" in a[:80] and ("name:" in a or "description:" in a)
+                or "## Ne Zaman Kullanılır" in a
+                or "Metrik → Kaynak Sözlüğü" in a
+                or "Bu skill," in a[:100]
+            )
+        ]
+        if clean:
+            best = max(clean, key=len)
+            if len(best) > 40:
+                return best.strip()
+
+        # Filtre tutmazsa en uzun olanı al
         best = max(full_answers, key=len)
         if len(best) > 40:
             return best.strip()
+
     if not chunks:
         return ""
+
+    # Kısa chunk'lar birleştirilmişse
     if all(len(c) < 100 for c in chunks[:40]):
         joined = "".join(chunks)
         if len(joined) > 40:
             return joined.strip()
+
+    # Son anlamlı chunk'ı al
     out: list[str] = []
     for c in chunks:
         c = c.strip()
         if c and (not out or c != out[-1]):
             out.append(c)
-    return "\n".join(out).strip()
+
+    if out:
+        # Yine skill filtresi
+        for candidate in reversed(out):
+            if not (
+                "---" in candidate[:80] and ("name:" in candidate or "description:" in candidate)
+                or "## Ne Zaman Kullanılır" in candidate
+                or "Metrik → Kaynak Sözlüğü" in candidate
+            ):
+                return candidate
+        return out[-1]
+
+    return ""
 
 
 def _is_cloudflare(status: int, text: str) -> bool:
