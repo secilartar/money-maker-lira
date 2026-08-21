@@ -90,38 +90,63 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_stock_info(ticker: str) -> str:
+    """Son bilinen kapanışı her durumda getirmeye çalışır (hafta sonu dahil)"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
         stock = yf.Ticker(symbol)
-        info = stock.info
-        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose")
-        prev = info.get("previousClose")
+
+        # 1. Önce info'dan dene
+        info = stock.info or {}
+        price = (
+            info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or info.get("previousClose")
+            or info.get("regularMarketPreviousClose")
+        )
+        prev = info.get("previousClose") or info.get("regularMarketPreviousClose")
         name = info.get("shortName") or info.get("longName") or ticker
         volume = info.get("volume") or info.get("regularMarketVolume")
 
-        if price:
-            text = f"**{name} ({ticker})**\n- Son Fiyat: **{price:.2f} TL**\n"
-            if prev and prev != 0:
-                change = price - prev
-                change_pct = (change / prev) * 100
-                text += f"- Günlük Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-            if volume:
-                text += f"- Hacim: {int(volume):,}\n"
-            return text
+        # 2. History ile son kapanışı garantile
+        hist = stock.history(period="10d", interval="1d")
+        last_close = None
+        prev_close = None
+        last_date = ""
 
-        hist = stock.history(period="5d")
         if not hist.empty:
-            last = hist.iloc[-1]
-            prev_close = hist.iloc[-2]["Close"] if len(hist) > 1 else last["Close"]
-            price = float(last["Close"])
-            change = price - float(prev_close)
-            change_pct = (change / float(prev_close)) * 100 if prev_close else 0
-            return (
-                f"**{name} ({ticker})**\n"
-                f"- Son Fiyat: **{price:.2f} TL**\n"
-                f"- Günlük Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-            )
-        return ""
+            last_close = float(hist["Close"].iloc[-1])
+            last_date = str(hist.index[-1].date()) if hasattr(hist.index[-1], "date") else ""
+            if len(hist) > 1:
+                prev_close = float(hist["Close"].iloc[-2])
+
+        # En iyi fiyatı seç
+        final_price = price or last_close
+        final_prev = prev or prev_close
+
+        if not final_price:
+            return ""
+
+        text = f"**{name} ({ticker})**\n"
+        text += f"- Son Kapanış: **{final_price:.2f} TL**"
+        if last_date:
+            text += f" ({last_date})"
+        text += "\n"
+
+        if final_prev and final_prev != 0:
+            change = final_price - final_prev
+            change_pct = (change / final_prev) * 100
+            text += f"- Önceki güne göre: {change:+.2f} TL (%{change_pct:+.2f})\n"
+
+        if volume:
+            text += f"- Hacim: {int(volume):,}\n"
+
+        # Hafta sonu notu
+        today = date.today()
+        if today.weekday() >= 5:  # 5=Cumartesi, 6=Pazar
+            text += "- Not: BIST kapalı (hafta sonu), bu Cuma kapanışıdır.\n"
+
+        return text
+
     except Exception:
         return ""
 
