@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v2.5
-yfinance + KAP bildirim desteği
+Money Maker — Lira'ya Sor API (Gemini) v2.6
+yfinance + dayanıklı KAP + sert prompt
 """
 
 from __future__ import annotations
 
 import os
 import re
+import time
 from datetime import date, timedelta
 from typing import Optional
 
@@ -39,7 +40,7 @@ KAP_HEADERS = {
 
 app = FastAPI(
     title="Money Maker Lira'ya Sor (Gemini)",
-    version="2.5",
+    version="2.6",
     description="Akıllı Lira – Gemini + yfinance + KAP"
 )
 
@@ -84,7 +85,7 @@ def _get_client() -> genai.Client:
 
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
-    blacklist = {"KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON", "GUN", "HAFTA"}
+    blacklist = {"KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON", "GUN", "HAFTA", "BUGUN"}
     return [c for c in set(candidates) if c not in blacklist]
 
 
@@ -125,74 +126,80 @@ def get_stock_info(ticker: str) -> str:
         return ""
 
 
-def fetch_kap_for_ticker(ticker: str, days: int = 7) -> str:
-    """Son X günün KAP özel durum bildirimlerini çeker"""
-    try:
-        to_d = date.today()
-        from_d = to_d - timedelta(days=days)
-        payload = {
-            "fromDate": from_d.isoformat(),
-            "toDate": to_d.isoformat(),
-            "mkkMemberOidList": [],
-            "subjectList": [],
-        }
+def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
+    """Son X günün KAP ODA bildirimlerini çeker (retry'lı)"""
+    to_d = date.today()
+    from_d = to_d - timedelta(days=days)
+    payload = {
+        "fromDate": from_d.isoformat(),
+        "toDate": to_d.isoformat(),
+        "mkkMemberOidList": [],
+        "subjectList": [],
+    }
 
-        with httpx.Client(timeout=12, follow_redirects=True) as client:
-            r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
-            if r.status_code != 200:
-                return ""
-            data = r.json()
-            if not isinstance(data, list):
-                return ""
+    data = []
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=15, follow_redirects=True) as client:
+                r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        break
+                elif r.status_code in (429, 503):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    break
+        except Exception:
+            time.sleep(1.5 * (attempt + 1))
+            continue
 
-        # Sadece ilgili hisseye ait ODA bildirimleri
-        relevant = []
-        ticker_up = ticker.upper()
-        for d in data:
-            if d.get("disclosureClass") != "ODA":
-                continue
-            stocks = d.get("relatedStocks") or d.get("stockCodes") or []
-            if isinstance(stocks, str):
-                stocks = [s.strip() for s in stocks.replace(",", " ").split()]
-            stocks_up = [str(s).upper() for s in stocks]
-            if ticker_up in stocks_up or any(ticker_up in s for s in stocks_up):
-                relevant.append(d)
-
-        if not relevant:
-            return f"{ticker} için son {days} günde özel durum bildirimi bulunamadı."
-
-        # En yeni 5 tanesini al
-        relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:5]
-
-        lines = [f"**{ticker} – Son KAP Bildirimleri (son {days} gün):**"]
-        for d in relevant:
-            when = (d.get("publishDate") or "")[:16]
-            subj = (d.get("subject") or "").strip()
-            summ = (d.get("summary") or "").strip()[:180]
-            idx = d.get("disclosureIndex")
-            link = f"https://www.kap.org.tr/tr/Bildirim/{idx}" if idx else ""
-            lines.append(f"- [{when}] {subj}")
-            if summ:
-                lines.append(f"  Özet: {summ}")
-            if link:
-                lines.append(f"  Link: {link}")
-        return "\n".join(lines)
-
-    except Exception:
+    if not data:
         return ""
+
+    relevant = []
+    ticker_up = ticker.upper()
+    for d in data:
+        if d.get("disclosureClass") != "ODA":
+            continue
+        stocks = d.get("relatedStocks") or d.get("stockCodes") or []
+        if isinstance(stocks, str):
+            stocks = [s.strip() for s in stocks.replace(",", " ").split()]
+        stocks_up = [str(s).upper() for s in stocks]
+        if ticker_up in stocks_up or any(ticker_up in s for s in stocks_up):
+            relevant.append(d)
+
+    if not relevant:
+        return ""
+
+    relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:5]
+
+    lines = [f"**{ticker} – Son KAP Bildirimleri:**"]
+    for d in relevant:
+        when = (d.get("publishDate") or "")[:16]
+        subj = (d.get("subject") or "").strip()
+        summ = (d.get("summary") or "").strip()[:160]
+        idx = d.get("disclosureIndex")
+        link = f"https://www.kap.org.tr/tr/Bildirim/{idx}" if idx else ""
+        lines.append(f"- [{when}] {subj}")
+        if summ:
+            lines.append(f"  {summ}")
+        if link:
+            lines.append(f"  {link}")
+    return "\n".join(lines)
 
 
 SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, net ve biraz esprili bir finans asistanısın.
-BIST hisseleri, fonlar ve piyasa konularında yardımcı olursun.
 
-Kurallar:
+Kurallar (çok önemli):
 - "kanki", "kankitom" diyebilirsin. Asla "hocam" deme.
 - Yatırım tavsiyesi verebilirsin, riskleri de söyle.
 - Sana canlı fiyat veya KAP bildirimi geldiyse onları kullan ve yorumla.
-- Veri gelmezse uzatma, bildiğin genel bilgiyle devam et.
-- Cevapları kısa ve net tut. Uzun giriş yapma.
-- KAP bildirimi varsa özetle ve önemini belirt.
+- Veri gelmezse "veri yok", "siteye bak", "kap.org.tr", "aracı kurum", "mobil uygulama" gibi şeyler SÖYLEME.
+- Veri yoksa sadece genel bilginle kısa cevap ver, uzatma.
+- Cevapları kısa ve net tut.
 """
 
 
@@ -204,7 +211,7 @@ def health():
         "gemini": bool(GEMINI_API_KEY),
         "secret": bool(API_SECRET_KEY),
         "model": MODEL_NAME,
-        "version": "2.5",
+        "version": "2.6",
         "yfinance": True,
         "kap": True
     }
@@ -220,13 +227,12 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    # Fiyat + KAP
-    for t in tickers[:3]:
+    for t in tickers[:2]:  # en fazla 2 hisse (rate limit için)
         price_info = get_stock_info(t)
         if price_info:
             extra_parts.append(price_info)
 
-        kap_info = fetch_kap_for_ticker(t, days=7)
+        kap_info = fetch_kap_for_ticker(t, days=5)
         if kap_info:
             extra_parts.append(kap_info)
 
@@ -235,10 +241,8 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         extra_context = (
             "\n\n--- CANLI VERİ ---\n"
             + "\n\n".join(extra_parts)
-            + "\n\nBu verileri kullanarak cevap ver. KAP bildirimlerini özetle."
+            + "\n\nBu verileri kullanarak cevap ver."
         )
-    elif tickers:
-        extra_context = "\n\n(Not: Canlı fiyat/KAP şu an çekilemedi, genel bilginle devam et.)"
 
     full_prompt = SYSTEM_PROMPT + extra_context
 
@@ -251,8 +255,8 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                 {"role": "user", "parts": [{"text": soru}]},
             ],
             config={
-                "temperature": 0.55,
-                "max_output_tokens": 2000,
+                "temperature": 0.5,
+                "max_output_tokens": 1800,
             }
         )
 
@@ -267,8 +271,8 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         raise HTTPException(status_code=502, detail=f"Gemini hatası: {err[:300]}")
 
     kaynak = "gemini"
-    if tickers:
-        kaynak = "gemini+yfinance+kap"
+    if extra_parts:
+        kaynak = "gemini+data"
 
     return SorResponse(
         ok=True,
@@ -283,7 +287,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 @app.get("/widget", response_class=HTMLResponse)
 def root():
     return HTMLResponse(
-        "<h2>Lira API v2.5 (Gemini + yfinance + KAP)</h2>"
+        "<h2>Lira API v2.6</h2>"
         "<p>POST /api/lira-sor</p>"
         "<p><a href='/health'>/health</a></p>"
     )
