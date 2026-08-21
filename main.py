@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 Money Maker — Lira'ya Sor API (Fintables Evo köprüsü)
-Render'da ayrı servis olarak çalışır.
+Akıllı sürüm: Chrome TLS taklidi + retry + backoff
 """
 
 from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from typing import Optional
 
@@ -23,13 +24,22 @@ except ImportError:
     raise SystemExit("curl_cffi gerekli: pip install curl_cffi")
 
 BASE = "https://agents.fintables.com"
-IMPERSONATE = os.environ.get("IMPERSONATE", "chrome131")
 TIMEOUT = int(os.environ.get("EVO_TIMEOUT", "180"))
 MODEL = os.environ.get("EVO_MODEL", "fintables:fast")
 WEB = os.environ.get("EVO_WEB", "true").lower() in ("1", "true", "yes")
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="1.0")
+# Denenecek Chrome profilleri (sırayla)
+IMPERSONATE_LIST = [
+    p.strip()
+    for p in os.environ.get("IMPERSONATE_LIST", "chrome131,chrome124,chrome120").split(",")
+    if p.strip()
+]
+
+MAX_RETRIES = int(os.environ.get("EVO_RETRIES", "3"))
+RETRY_WAIT = float(os.environ.get("EVO_RETRY_WAIT", "2.5"))
+
+app = FastAPI(title="Money Maker Lira'ya Sor", version="1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +52,7 @@ app.add_middleware(
 class SorRequest(BaseModel):
     soru: str = Field(..., min_length=2, max_length=2000)
     thread_id: Optional[str] = None
-    new_thread: bool = False
+    new_thread: bool = True  # varsayılan: her zaman yeni thread
     web: Optional[bool] = None
 
 
@@ -79,13 +89,25 @@ def _cookie() -> str:
 
 
 def _headers() -> dict:
+    """Tarayıcıya yakın header seti."""
     h = {
         "Accept": "*/*",
-        "Accept-Language": "tr,en;q=0.9",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Content-Type": "application/json",
         "Origin": "https://fintables.com",
-        "Referer": "https://fintables.com/",
+        "Referer": "https://fintables.com/evo",
         "Authorization": f"Bearer {_bearer()}",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+        "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-site",
     }
     ck = _cookie()
     if ck:
@@ -207,16 +229,71 @@ def parse_sse(raw: str) -> str:
     return "\n".join(out).strip()
 
 
+def _is_cloudflare(status: int, text: str) -> bool:
+    if status not in (401, 403, 429, 503):
+        return False
+    low = (text or "").lower()
+    return (
+        "just a moment" in low
+        or "cloudflare" in low
+        or "cf-ray" in low
+        or "attention required" in low
+    )
+
+
+def _post_with_retry(url: str, json_body: dict, timeout: int = 30):
+    """
+    Farklı Chrome impersonate + birkaç deneme.
+    403/CF olursa bekle, tekrar dene.
+    """
+    last_err = None
+    headers = _headers()
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        for imp in IMPERSONATE_LIST:
+            try:
+                r = cf_requests.post(
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    impersonate=imp,
+                    timeout=timeout,
+                )
+            except Exception as e:
+                last_err = e
+                continue
+
+            # Başarı
+            if r.status_code < 400:
+                return r
+
+            # Cloudflare / rate limit → bekle, tekrar
+            if _is_cloudflare(r.status_code, r.text):
+                last_err = f"CF/Auth {r.status_code} ({imp})"
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_WAIT * attempt)
+                continue
+
+            # Diğer hatalar (404 vs.) — retry etme
+            return r
+
+        # Tüm impersonate bitti, bir tur daha
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_WAIT * attempt)
+
+    if last_err:
+        raise HTTPException(403, f"Cloudflare engeli (retry bitti): {last_err}")
+    raise HTTPException(502, "Evo isteği başarısız")
+
+
 def create_thread() -> Optional[str]:
-    for body in ({"metadata": {"assistant_id": "evo"}}, {}, {"assistant_id": "evo"}):
+    for body in (
+        {"metadata": {"assistant_id": "evo"}},
+        {},
+        {"assistant_id": "evo"},
+    ):
         try:
-            r = cf_requests.post(
-                f"{BASE}/threads",
-                headers=_headers(),
-                json=body,
-                impersonate=IMPERSONATE,
-                timeout=30,
-            )
+            r = _post_with_retry(f"{BASE}/threads", body, timeout=30)
             if r.status_code in (200, 201):
                 data = r.json()
                 tid = (
@@ -227,31 +304,25 @@ def create_thread() -> Optional[str]:
                 )
                 if tid:
                     return str(tid)
+        except HTTPException:
+            continue
         except Exception:
-            pass
+            continue
     return None
 
 
 def ask_evo(question: str, thread_id: str, web: bool) -> tuple[str, str]:
     url = f"{BASE}/threads/{thread_id}/runs/stream"
-    try:
-        r = cf_requests.post(
-            url,
-            headers=_headers(),
-            json=_payload(question, web),
-            impersonate=IMPERSONATE,
-            timeout=TIMEOUT,
-        )
-    except Exception as e:
-        raise HTTPException(502, f"Evo bağlantı hatası: {e}") from e
+    r = _post_with_retry(url, _payload(question, web), timeout=TIMEOUT)
 
     raw = r.text
     ct = (r.headers.get("content-type") or "").lower()
 
-    if r.status_code in (401, 403):
+    if r.status_code in (401, 403) or _is_cloudflare(r.status_code, raw):
         raise HTTPException(
             403,
-            "Cloudflare/Auth engeli. BEARER_TOKEN ve CFLB_COOKIE'yi Render env'de yenile.",
+            "Cloudflare/Auth engeli. BEARER_TOKEN + FULL_COOKIE yenile "
+            "(tercihen cf_clearance dahil tüm Cookie satırı).",
         )
     if r.status_code == 404:
         raise HTTPException(404, f"Thread yok: {thread_id}")
@@ -279,6 +350,8 @@ def health():
         "bearer": bool(os.environ.get("BEARER_TOKEN")),
         "cookie": bool(os.environ.get("CFLB_COOKIE") or os.environ.get("FULL_COOKIE")),
         "secret": bool(API_SECRET_KEY),
+        "impersonate": IMPERSONATE_LIST,
+        "retries": MAX_RETRIES,
     }
 
 
@@ -289,17 +362,23 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     web = WEB if req.web is None else req.web
     thread_id = (req.thread_id or os.environ.get("DEFAULT_THREAD_ID") or "").strip()
 
+    # Her zaman mümkünse yeni thread
     if req.new_thread or not thread_id:
         tid = create_thread()
         if tid:
             thread_id = tid
         elif not thread_id:
-            raise HTTPException(502, "Yeni thread açılamadı")
+            raise HTTPException(
+                502,
+                "Yeni thread açılamadı (Cloudflare?). "
+                "FULL_COOKIE / BEARER_TOKEN yenile veya DEFAULT_THREAD_ID kullan.",
+            )
 
     try:
         cevap, kaynak = ask_evo(req.soru.strip(), thread_id, web)
     except HTTPException as e:
-        if e.status_code in (403, 404) and not req.new_thread:
+        # 403/404 ise bir kez daha yeni thread dene
+        if e.status_code in (403, 404):
             tid = create_thread()
             if tid:
                 cevap, kaynak = ask_evo(req.soru.strip(), tid, web)
@@ -318,149 +397,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     )
 
 
-# ---- Widget (siteden iframe veya direkt açılabilir) ----
-WIDGET_HTML = """<!DOCTYPE html>
-<html lang="tr">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Lira'ya Sor — Money Maker</title>
-<style>
-  :root {
-    --bg: #0f1419;
-    --card: #1a2332;
-    --border: #2a3544;
-    --text: #e7ecf3;
-    --muted: #8b9bb4;
-    --accent: #3d9cf0;
-    --accent2: #2dd4a8;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    background: var(--bg); color: var(--text);
-    min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
-    padding: 24px 12px;
-  }
-  .wrap { width: 100%; max-width: 720px; }
-  h1 { font-size: 1.25rem; margin: 0 0 4px; font-weight: 650; }
-  .sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 16px; }
-  .card {
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 14px; padding: 16px;
-  }
-  textarea {
-    width: 100%; min-height: 90px; resize: vertical;
-    background: #0d1218; color: var(--text);
-    border: 1px solid var(--border); border-radius: 10px;
-    padding: 12px 14px; font-size: 0.95rem; line-height: 1.45;
-  }
-  textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
-  .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
-  button {
-    border: 0; border-radius: 10px; padding: 10px 18px;
-    font-weight: 600; cursor: pointer; font-size: 0.95rem;
-  }
-  .btn-primary { background: linear-gradient(135deg, var(--accent), #2563eb); color: #fff; }
-  .btn-primary:disabled { opacity: 0.55; cursor: wait; }
-  .btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
-  #status { margin-top: 12px; font-size: 0.85rem; color: var(--muted); min-height: 1.2em; }
-  #answer {
-    margin-top: 14px; white-space: pre-wrap; line-height: 1.55;
-    font-size: 0.95rem; display: none;
-    background: #0d1218; border: 1px solid var(--border);
-    border-radius: 10px; padding: 14px;
-  }
-  #answer.show { display: block; }
-  .badge {
-    display: inline-block; font-size: 0.7rem; padding: 2px 8px;
-    border-radius: 999px; background: #14322a; color: var(--accent2);
-    margin-bottom: 8px;
-  }
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <h1>🎙️ Lira'ya Sor</h1>
-    <p class="sub">Money Maker · Fintables Evo köprüsü · Yatırım tavsiyesi değildir</p>
-    <div class="card">
-      <textarea id="q" placeholder="Örn: AKGRT taşıyan fonlar hangileri? / TLY yatırımcı sayısı son 1 hafta"></textarea>
-      <div class="row">
-        <button class="btn-primary" id="go" type="button">Sor</button>
-        <button class="btn-ghost" id="clr" type="button">Temizle</button>
-      </div>
-      <div id="status"></div>
-      <div id="answer"></div>
-    </div>
-  </div>
-<script>
-  // Widget kendi origin'inde çalışır; API path relative.
-  // Siteden iframe ile açacaksan API secret'ı burada kullanma — backend proxy önerilir.
-  const API = "";
-
-  const q = document.getElementById("q");
-  const go = document.getElementById("go");
-  const clr = document.getElementById("clr");
-  const status = document.getElementById("status");
-  const answer = document.getElementById("answer");
-
-  async function ask() {
-    const soru = (q.value || "").strip();
-    if (!soru) { status.textContent = "Soru yaz."; return; }
-    go.disabled = true;
-    status.textContent = "Lira düşünüyor…";
-    answer.classList.remove("show");
-    answer.textContent = "";
-    try {
-      const r = await fetch((API || "") + "/api/lira-sor", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Widget doğrudan secret göndermesin; siteden çağırırken kendi backend'in üzerinden geçir.
-        },
-        body: JSON.stringify({ soru, new_thread: true }),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        status.textContent = data.detail || ("Hata " + r.status);
-        return;
-      }
-      status.textContent = "Hazır";
-      answer.innerHTML = '<div class="badge">Lira</div>' +
-        escapeHtml(data.cevap || "");
-      answer.classList.add("show");
-    } catch (e) {
-      status.textContent = "Bağlantı hatası: " + e;
-    } finally {
-      go.disabled = false;
-    }
-  }
-
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/\\n/g, "<br>");
-  }
-
-  go.addEventListener("click", ask);
-  clr.addEventListener("click", () => {
-    q.value = ""; answer.classList.remove("show"); answer.textContent = "";
-    status.textContent = "";
-  });
-  q.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();
-  });
-</script>
-</body>
-</html>
-"""
-
-
 @app.get("/", response_class=HTMLResponse)
-def widget():
-    return HTMLResponse(WIDGET_HTML)
-
-
 @app.get("/widget", response_class=HTMLResponse)
-def widget_alias():
-    return HTMLResponse(WIDGET_HTML)
+def widget():
+    return HTMLResponse("<p>Lira API ayakta. POST /api/lira-sor kullan.</p>")
