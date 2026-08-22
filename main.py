@@ -387,6 +387,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     for attempt in range(2):
         try:
             client = _get_client()
+# GÜNCELLENMİŞ GEMİNİ ÇAĞRISI (Google Arama Yeteneği Eklenmiş Hali)
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=user_content,
@@ -394,6 +395,8 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.65,
                     max_output_tokens=3000,
+                    # İŞTE BURASI: Lira'nın internette arama yapmasını sağlar!
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
                 ),
             )
             cevap = (response.text or "").strip()
