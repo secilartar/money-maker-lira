@@ -108,24 +108,78 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_fon_info(ticker: str) -> str:
-    """Firebase'den fon verilerini ve pozisyonlarını çeker"""
+    """
+    Firebase'den fon/pozisyon bilgisi çeker.
+    - ticker bir HİSSE ise → o hisseyi taşıyan fonları listeler
+    - ticker bir FON ise  → o fonun içindeki hisseleri listeler
+    """
     if not firebase_admin._apps:
         return ""
-        
-    try:
-        pozisyonlar_ref = db.reference("veriler/Pozisyonlar")
-        pozisyonlar = pozisyonlar_ref.order_by_child("fon_kodu").equal_to(ticker.upper()).get()
-        
-        if not pozisyonlar:
-            return ""
 
-        text = f"**{ticker.upper()} Fonu Portföy Dağılımı:**\n"
-        for key, detay in pozisyonlar.items():
-            hisse = detay.get("hisse_kodu", "Bilinmiyor")
-            oran = detay.get("oran", 0)
-            text += f"- {hisse}: %{oran}\n"
-            
-        return text
+    ticker = ticker.upper().strip()
+    try:
+        poz_ref = db.reference("veriler/Pozisyonlar")
+
+        # 1) Önce HİSSE olarak dene (hisse_kodu ile)
+        by_hisse = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get() or {}
+
+        if by_hisse:
+            # Bu hisseyi taşıyan fonlar
+            lines = [f"**{ticker} hissesini taşıyan fonlar:**"]
+            # lot'a göre büyükten küçüğe sırala
+            items = []
+            for _, p in by_hisse.items():
+                fon = (p.get("fon_kodu") or "?").upper()
+                agirlik = p.get("agirlik") or 0
+                lot = p.get("lot_adedi") or 0
+                onceki = p.get("onceki_agirlik")
+                degisim = None
+                if onceki is not None:
+                    try:
+                        degisim = float(agirlik) - float(onceki)
+                    except Exception:
+                        pass
+                items.append((fon, float(agirlik or 0), float(lot or 0), degisim))
+
+            items.sort(key=lambda x: x[2], reverse=True)  # lot'a göre
+
+            for fon, agirlik, lot, degisim in items[:15]:  # en fazla 15 fon
+                deg_str = f" | Değ: %{degisim:+.2f}" if degisim is not None else ""
+                lines.append(f"- {fon}: Ağr %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
+
+            if len(items) > 15:
+                lines.append(f"... ve {len(items)-15} fon daha")
+            return "\n".join(lines)
+
+        # 2) Hisse bulunamadıysa FON olarak dene (fon_kodu ile)
+        by_fon = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get() or {}
+
+        if by_fon:
+            lines = [f"**{ticker} fonu portföy dağılımı:**"]
+            items = []
+            for _, p in by_fon.items():
+                hisse = (p.get("hisse_kodu") or "?").upper()
+                agirlik = p.get("agirlik") or 0
+                lot = p.get("lot_adedi") or 0
+                onceki = p.get("onceki_agirlik")
+                degisim = None
+                if onceki is not None:
+                    try:
+                        degisim = float(agirlik) - float(onceki)
+                    except Exception:
+                        pass
+                items.append((hisse, float(agirlik or 0), float(lot or 0), degisim))
+
+            items.sort(key=lambda x: x[1], reverse=True)  # ağırlığa göre
+
+            for hisse, agirlik, lot, degisim in items[:20]:
+                deg_str = f" | Değ: %{degisim:+.2f}" if degisim is not None else ""
+                lines.append(f"- {hisse}: Ağr %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
+
+            return "\n".join(lines)
+
+        return ""  # hiçbir şey bulunamadı
+
     except Exception as e:
         print(f"[Firebase Hata] {ticker} okunamadı: {e}")
         return ""
