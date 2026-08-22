@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v2.7
-Hata gizleme + doğal Lira fallback
+Money Maker — Lira'ya Sor API (Gemini) v2.8
+yf.download (analiz kodundaki gibi) + KAP + doğal cevap
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from google import genai
 import yfinance as yf
 import httpx
+import pandas as pd
 
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
@@ -28,32 +29,24 @@ MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
 KAP_API = "https://www.kap.org.tr/tr/api/disclosure/members/byCriteria"
 KAP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
     "Referer": "https://www.kap.org.tr/tr/bildirim-sorgu",
     "Origin": "https://www.kap.org.tr",
 }
 
-app = FastAPI(
-    title="Money Maker Lira'ya Sor (Gemini)",
-    version="2.7",
-    description="Akıllı Lira – Gemini + yfinance + KAP"
-)
+app = FastAPI(title="Money Maker Lira'ya Sor", version="2.8")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ================== MODELLER ==================
 class SorRequest(BaseModel):
     soru: str = Field(..., min_length=2, max_length=2000)
     thread_id: Optional[str] = None
@@ -69,17 +62,16 @@ class SorResponse(BaseModel):
     kaynak: str = "gemini"
 
 
-# ================== YARDIMCI ==================
 def _check_secret(x_api_key: Optional[str]) -> None:
     if not API_SECRET_KEY:
-        raise HTTPException(status_code=500, detail="API_SECRET_KEY tanımlı değil")
+        raise HTTPException(500, "API_SECRET_KEY tanımlı değil")
     if not x_api_key or x_api_key != API_SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Erişim reddedildi. Geçersiz API anahtarı.")
+        raise HTTPException(403, "Erişim reddedildi")
 
 
-def _get_client() -> genai.Client:
+def _get_client():
     if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY tanımlı değil")
+        raise HTTPException(500, "GEMINI_API_KEY tanımlı değil")
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
@@ -90,63 +82,38 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_stock_info(ticker: str) -> str:
-    """Son bilinen kapanışı her durumda getirmeye çalışır (hafta sonu dahil)"""
+    """Analiz kodundaki gibi yf.download kullanıyor – daha güvenilir"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
-        stock = yf.Ticker(symbol)
-
-        # 1. Önce info'dan dene
-        info = stock.info or {}
-        price = (
-            info.get("currentPrice")
-            or info.get("regularMarketPrice")
-            or info.get("previousClose")
-            or info.get("regularMarketPreviousClose")
-        )
-        prev = info.get("previousClose") or info.get("regularMarketPreviousClose")
-        name = info.get("shortName") or info.get("longName") or ticker
-        volume = info.get("volume") or info.get("regularMarketVolume")
-
-        # 2. History ile son kapanışı garantile
-        hist = stock.history(period="10d", interval="1d")
-        last_close = None
-        prev_close = None
-        last_date = ""
-
-        if not hist.empty:
-            last_close = float(hist["Close"].iloc[-1])
-            last_date = str(hist.index[-1].date()) if hasattr(hist.index[-1], "date") else ""
-            if len(hist) > 1:
-                prev_close = float(hist["Close"].iloc[-2])
-
-        # En iyi fiyatı seç
-        final_price = price or last_close
-        final_prev = prev or prev_close
-
-        if not final_price:
+        df = yf.download(symbol, period="10d", interval="1d", progress=False, threads=False)
+        if df.empty:
             return ""
 
-        text = f"**{name} ({ticker})**\n"
-        text += f"- Son Kapanış: **{final_price:.2f} TL**"
-        if last_date:
-            text += f" ({last_date})"
-        text += "\n"
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        if final_prev and final_prev != 0:
-            change = final_price - final_prev
-            change_pct = (change / final_prev) * 100
-            text += f"- Önceki güne göre: {change:+.2f} TL (%{change_pct:+.2f})\n"
+        last = df.iloc[-1]
+        prev = df.iloc[-2] if len(df) > 1 else last
 
+        price = float(last["Close"])
+        prev_close = float(prev["Close"])
+        change = price - prev_close
+        change_pct = (change / prev_close) * 100 if prev_close else 0
+        volume = int(last.get("Volume", 0))
+        last_date = str(df.index[-1].date())
+
+        text = (
+            f"**{ticker}**\n"
+            f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
+            f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
+        )
         if volume:
-            text += f"- Hacim: {int(volume):,}\n"
+            text += f"- Hacim: {volume:,}\n"
 
-        # Hafta sonu notu
-        today = date.today()
-        if today.weekday() >= 5:  # 5=Cumartesi, 6=Pazar
-            text += "- Not: BIST kapalı (hafta sonu), bu Cuma kapanışıdır.\n"
+        if date.today().weekday() >= 5:
+            text += "- Not: BIST kapalı (hafta sonu), Cuma kapanışıdır.\n"
 
         return text
-
     except Exception:
         return ""
 
@@ -162,18 +129,13 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     }
 
     data = []
-    for attempt in range(2):
-        try:
-            with httpx.Client(timeout=12, follow_redirects=True) as client:
-                r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list):
-                        break
-                time.sleep(1.5)
-        except Exception:
-            time.sleep(1)
-            continue
+    try:
+        with httpx.Client(timeout=10, follow_redirects=True) as client:
+            r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
+            if r.status_code == 200:
+                data = r.json() if isinstance(r.json(), list) else []
+    except Exception:
+        pass
 
     if not data:
         return ""
@@ -186,20 +148,18 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
         stocks = d.get("relatedStocks") or d.get("stockCodes") or []
         if isinstance(stocks, str):
             stocks = [s.strip() for s in stocks.replace(",", " ").split()]
-        stocks_up = [str(s).upper() for s in stocks]
-        if ticker_up in stocks_up or any(ticker_up in s for s in stocks_up):
+        if ticker_up in [str(s).upper() for s in stocks]:
             relevant.append(d)
 
     if not relevant:
         return ""
 
     relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:4]
-
-    lines = [f"**{ticker} – Son KAP Bildirimleri:**"]
+    lines = [f"**{ticker} – Son KAP:**"]
     for d in relevant:
         when = (d.get("publishDate") or "")[:16]
         subj = (d.get("subject") or "").strip()
-        summ = (d.get("summary") or "").strip()[:140]
+        summ = (d.get("summary") or "").strip()[:120]
         lines.append(f"- [{when}] {subj}")
         if summ:
             lines.append(f"  {summ}")
@@ -211,29 +171,14 @@ Sen Lira'sın. Türkçe konuşan, samimi, net ve biraz esprili bir finans asista
 
 Kurallar:
 - "kanki", "kankitom", "patron", "donçiçim"  diyebilirsin.
-- Yatırım tavsiyesi verebilirsin, riskleri de söyle.
-- Sana canlı fiyat veya KAP bildirimi geldiyse onları kullan.
-- Veri gelmezse site önerme, "kap.org.tr" deme, "aracı kurum" deme.
-- Cevapları kısa ve doğal tut, arkadaş gibi konuş.
+- Yatırım tavsiyesi verebilirsin, riskleri de belirt.
+- Sana fiyat veya KAP verisi geldiyse MUTLAKA kullan.
+- Veri gelmezse "veri ulaşmadı", "sisteme düşmedi", "kafadan sallamayayım" gibi cümleler KULLANMA.
+- Veri yoksa bile genel bilginle kısa ve doğal cevap ver.
+- Cevapları mümkün olduğunca detaylandır hatta emoji de kullan, arkadaş gibi konuş.
 """
 
 
-def natural_fallback(soru: str, tickers: list[str]) -> str:
-    """Gemini çökünce Lira kendi ağzından cevap versin"""
-    if tickers:
-        t = tickers[0]
-        return (
-            f"Kanki şu an biraz yoğunum, {t} için net rakam ve son haberleri "
-            f"hemen çekemedim. Biraz sonra tekrar sorarsan bakarız. "
-            f"Genel olarak {t} volatil bir hisse, stop’unu ihmal etme."
-        )
-    return (
-        "Kanki şu an sistem biraz yoğun, net cevap veremiyorum. "
-        "Biraz sonra tekrar dene, hemen bakarım."
-    )
-
-
-# ================== ENDPOINTLER ==================
 @app.get("/health")
 def health():
     return {
@@ -241,9 +186,7 @@ def health():
         "gemini": bool(GEMINI_API_KEY),
         "secret": bool(API_SECRET_KEY),
         "model": MODEL_NAME,
-        "version": "2.7",
-        "yfinance": True,
-        "kap": True
+        "version": "2.8"
     }
 
 
@@ -256,24 +199,19 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     extra_parts = []
 
     for t in tickers[:2]:
-        price_info = get_stock_info(t)
-        if price_info:
-            extra_parts.append(price_info)
-        kap_info = fetch_kap_for_ticker(t, days=5)
-        if kap_info:
-            extra_parts.append(kap_info)
+        price = get_stock_info(t)
+        if price:
+            extra_parts.append(price)
+        kap = fetch_kap_for_ticker(t)
+        if kap:
+            extra_parts.append(kap)
 
     extra_context = ""
     if extra_parts:
-        extra_context = (
-            "\n\n--- CANLI VERİ ---\n"
-            + "\n\n".join(extra_parts)
-            + "\n\nBu verileri kullanarak cevap ver."
-        )
+        extra_context = "\n\n--- CANLI VERİ ---\n" + "\n\n".join(extra_parts) + "\nBu verileri kullan."
 
     full_prompt = SYSTEM_PROMPT + extra_context
 
-    # Gemini'yi 2 kere dene, olmazsa doğal fallback
     cevap = None
     for attempt in range(2):
         try:
@@ -282,24 +220,25 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                 model=MODEL_NAME,
                 contents=[
                     {"role": "user", "parts": [{"text": full_prompt}]},
-                    {"role": "model", "parts": [{"text": "Tamam kanki, Lira hazır. Sor."}]},
+                    {"role": "model", "parts": [{"text": "Tamam kanki, hazırım."}]},
                     {"role": "user", "parts": [{"text": soru}]},
                 ],
-                config={
-                    "temperature": 0.5,
-                    "max_output_tokens": 1800,
-                }
+                config={"temperature": 0.5, "max_output_tokens": 1800},
             )
             cevap = (response.text or "").strip()
             if cevap:
                 break
         except Exception:
             if attempt == 0:
-                time.sleep(1.5)
+                time.sleep(1.2)
             continue
 
     if not cevap:
-        cevap = natural_fallback(soru, tickers)
+        # Son çare doğal cevap
+        if tickers:
+            cevap = f"Kanki {tickers[0]} için şu an net veri çekemedim ama genel olarak volatil bir hisse, stop’unu unutma."
+        else:
+            cevap = "Kanki şu an biraz yoğunum, biraz sonra tekrar sor."
 
     return SorResponse(
         ok=True,
@@ -310,11 +249,6 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     )
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.get("/widget", response_class=HTMLResponse)
+@app.get("/")
 def root():
-    return HTMLResponse(
-        "<h2>Lira API v2.7</h2>"
-        "<p>POST /api/lira-sor</p>"
-        "<p><a href='/health'>/health</a></p>"
-    )
+    return HTMLResponse("<h2>Lira API v2.8</h2><p><a href='/health'>/health</a></p>")
