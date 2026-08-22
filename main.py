@@ -86,85 +86,73 @@ def extract_tickers(text: str) -> list[str]:
     }
     return [c for c in set(candidates) if c not in blacklist]
 
-
 def get_stock_info(ticker: str) -> str:
-    """yfinance .info sözlüğünü kullanarak hafta sonu/Render sorunlarını aşan en sağlam versiyon"""
+    """Günlük verinin Cuma'yı yutmasına karşı Haftalık veri ile doğrulama yapan Hibrit Versiyon"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     
     try:
-        stock = yf.Ticker(symbol)
-        
-        # 1. YÖNTEM: Snapshot (Anlık Özet) Çekmek 
-        # Web sayfasındaki anlık veriyi çeker, hafta sonu sorunlarından etkilenmez.
-        info = stock.info
-        
-        # Bazen Yahoo info'yu eksik dönebilir, güvenli kontrol yapıyoruz.
-        if info and ("regularMarketPrice" in info or "currentPrice" in info):
-            price = info.get("currentPrice", info.get("regularMarketPrice", 0.0))
-            prev_close = info.get("previousClose", 0.0)
-            volume = info.get("regularMarketVolume", info.get("volume", 0))
-            
-            if price > 0:  # Fiyat başarıyla geldiyse buradan dön!
-                change = price - prev_close
-                change_pct = (change / prev_close * 100) if prev_close else 0
-                
-                text = (
-                    f"**{ticker}**\n"
-                    f"- Son Kapanış: **{price:.2f} TL**\n"
-                    f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-                )
-                if volume > 0:
-                    text += f"- Hacim: {volume:,}\n"
+        # 1. Hem günlük hem haftalık veriyi çekiyoruz
+        df_daily = yf.download(symbol, period="5d", interval="1d", progress=False, auto_adjust=True)
+        df_weekly = yf.download(symbol, period="1mo", interval="1wk", progress=False, auto_adjust=True)
 
-                # Türkiye saatine göre hafta sonu notu
-                bugun = datetime.now(TR_TZ)
-                if bugun.weekday() >= 5:
-                    text += "- Not: BIST kapalı (hafta sonu). Bu Cuma kapanışıdır.\n"
-                    
-                return text
-
-        # 2. YÖNTEM (FALLBACK): Eğer info başarısız olursa, eski history yöntemine dön
-        df = stock.history(period="5d", auto_adjust=True)
-        if df.empty:
-            return ""
-            
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df = df.dropna(subset=["Close"])
-        if df.empty:
+        if df_daily.empty or df_weekly.empty:
             return ""
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else last
+        # MultiIndex düzeltmeleri (Pandas güncellemeleri için)
+        if isinstance(df_daily.columns, pd.MultiIndex):
+            df_daily.columns = df_daily.columns.get_level_values(0)
+            df_weekly.columns = df_weekly.columns.get_level_values(0)
 
-        price = float(last["Close"])
-        prev_close = float(prev["Close"])
+        df_daily = df_daily.dropna(subset=["Close"])
+        df_weekly = df_weekly.dropna(subset=["Close"])
+
+        if df_daily.empty or df_weekly.empty:
+            return ""
+
+        daily_last = df_daily.iloc[-1]
+        weekly_last = df_weekly.iloc[-1]
+
+        price_daily = float(daily_last["Close"])
+        price_weekly = float(weekly_last["Close"])
+
+        # HİBRİT KONTROL: Haftalık kapanış günlükten farklıysa, Yahoo Cuma'yı yutmuş demektir!
+        if abs(price_weekly - price_daily) > 0.001:
+            price = price_weekly            # Gerçek son kapanış (Cuma: 690.50)
+            prev_close = price_daily        # Bir önceki sağlam gün (Perşembe: 694.00)
+            volume = 0                      # Hafta sonu hatasından dolayı hacim verisi yanıltıcı olmasın diye 0 geçiyoruz
+            last_date = "Cuma Kapanışı (Hafta sonu doğrulandı)"
+        else:
+            # Hafta içi standart sorunsuz işleyiş
+            price = price_daily
+            prev_close = float(df_daily.iloc[-2]["Close"]) if len(df_daily) > 1 else price_daily
+            volume = int(daily_last["Volume"]) if "Volume" in daily_last and pd.notna(daily_last["Volume"]) else 0
+            try:
+                last_date = daily_last.name.strftime("%Y-%m-%d") if hasattr(daily_last.name, "strftime") else str(daily_last.name)[:10]
+            except Exception:
+                last_date = str(df_daily.index[-1])[:10]
+
+        # Değişim Matematiği
         change = price - prev_close
         change_pct = (change / prev_close * 100) if prev_close else 0
-        volume = int(last["Volume"]) if "Volume" in last and pd.notna(last["Volume"]) else 0
-        
-        try:
-            last_date = last.name.strftime("%Y-%m-%d") if hasattr(last.name, "strftime") else str(last.name)[:10]
-        except Exception:
-            last_date = str(df.index[-1])[:10]
 
         text = (
             f"**{ticker}**\n"
             f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
             f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
         )
+        
         if volume > 0:
             text += f"- Hacim: {volume:,}\n"
 
+        # Türkiye saatine göre hafta sonu uyarısı
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
-            text += "- Not: BIST kapalı (hafta sonu). Bu Cuma kapanışıdır.\n"
+            text += "- Not: BIST kapalı. Fiyat haftalık paket verisinden özel olarak kurtarıldı.\n"
 
         return text
 
     except Exception as e:
-        print(f"[yfinance hata] {ticker}: {e}")
+        print(f"[yfinance hata - hibrit] {ticker}: {e}")
         return ""
         
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
