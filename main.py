@@ -480,12 +480,20 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.65,
-                    max_output_tokens=3000,
+                    max_output_tokens=8192,
                 )
             )
             
             response = chat.send_message(user_content)
             cevap = (response.text or "").strip()
+            
+            # Cevap çok kısa geldiyse veya yarıda kesilmiş gibi görünüyorsa bir kez daha dene
+            if cevap and len(cevap) < 900:
+                print(f"[Gemini] Cevap kısa geldi ({len(cevap)} karakter), tekrar deniyorum...")
+                response = chat.send_message(
+                    user_content + "\n\nLütfen cevabı yarıda kesme, sonuna kadar detaylı ve tamamlanmış şekilde yaz."
+                )
+                cevap = (response.text or "").strip()
             
             if cevap:
                 break 
