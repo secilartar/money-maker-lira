@@ -348,24 +348,23 @@ def test_price(hisse: str = "BRSAN"):
 @app.post("/api/lira-sor", response_model=SorResponse)
 def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     _check_secret(x_api_key)
-
     soru = req.soru.strip()
     tickers = extract_tickers(soru)
     extra_parts = []
 
-for t in tickers[:3]:
-    price = get_stock_info(t)
-    if price:
-        extra_parts.append(price)
-           
-    kap = fetch_kap_for_ticker(t)
-    if kap:
-        extra_parts.append(kap)
-           
-    fon = get_fon_info(t)
-    print(f"[DEBUG FON] ticker={t} | len={len(fon)} | preview={fon[:180] if fon else 'BOŞ'}")
-    if fon:
-        extra_parts.append(fon)
+    for t in tickers[:3]:
+        price = get_stock_info(t)
+        if price:
+            extra_parts.append(price)
+
+        kap = fetch_kap_for_ticker(t)
+        if kap:
+            extra_parts.append(kap)
+
+        fon = get_fon_info(t)
+        print(f"[DEBUG FON] ticker={t} | len={len(fon)} | preview={fon[:180] if fon else 'BOŞ'}")
+        if fon:
+            extra_parts.append(fon)
 
     su_an = datetime.now(TR_TZ)
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
@@ -386,8 +385,6 @@ for t in tickers[:3]:
     for attempt in range(2):
         try:
             client = _get_client()
-            
-            # DÜZELTME: GenerateContentConfig kullanıldı
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=user_content,
@@ -419,7 +416,6 @@ for t in tickers[:3]:
         thread_id="gemini",
         kaynak="gemini+data" if extra_parts else "gemini"
     )
-
 
 @app.get("/")
 def root():
