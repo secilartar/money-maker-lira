@@ -91,38 +91,69 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_stock_info(ticker: str) -> str:
+    """Daha dayanıklı fiyat çekme (Render + hafta sonu için)"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
+    
     try:
-        df = yf.download(symbol, period="10d", interval="1d", progress=False, threads=False)
+        # 1. Önce download dene
+        df = yf.download(
+            symbol,
+            period="15d",
+            interval="1d",
+            progress=False,
+            threads=False,
+            auto_adjust=True
+        )
+        
+        if df.empty:
+            # 2. Fallback: Ticker.history
+            stock = yf.Ticker(symbol)
+            df = stock.history(period="15d", interval="1d", auto_adjust=True)
+        
         if df.empty:
             return ""
+
+        # MultiIndex düzelt
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
+        # NaN satırları temizle (Özellikle hafta sonu Render sorunları için)
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            return ""
+
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
+
         price = float(last["Close"])
         prev_close = float(prev["Close"])
         change = price - prev_close
-        change_pct = (change / prev_close) * 100 if prev_close else 0
-        volume = int(last.get("Volume", 0))
-        last_date = str(df.index[-1].date())
+        change_pct = (change / prev_close * 100) if prev_close else 0
+        volume = int(last["Volume"]) if "Volume" in last and pd.notna(last["Volume"]) else 0
+        
+        # Tarih
+        try:
+            last_date = last.name.strftime("%Y-%m-%d") if hasattr(last.name, "strftime") else str(last.name)[:10]
+        except Exception:
+            last_date = str(df.index[-1])[:10]
 
         text = (
             f"**{ticker}**\n"
             f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
             f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
         )
-        if volume:
+        if volume > 0:
             text += f"- Hacim: {volume:,}\n"
-            
-        # Hafta sonu kontrolünü Türkiye saatine göre yapıyoruz
+
+        # Türkiye saatine göre hafta sonu notu
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
-            text += "- Not: BIST şu an kapalı (Hafta sonu). Fiyat Cuma kapanışıdır.\n"
-            
+            text += "- Not: BIST kapalı (hafta sonu). Bu Cuma kapanışıdır.\n"
+
         return text
-    except Exception:
+
+    except Exception as e:
+        print(f"[yfinance hata] {ticker}: {e}")
         return ""
 
 
@@ -178,7 +209,7 @@ Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabile
 
 ZORUNLU KURALLAR:
 - "kanki", "kankitom", "patron" diyebilirsin. Asla "hocam" deme.
-- Sana CANLI VERİ geldiyse, ÖNCE güncel fiyatı ve durumu şık bir şekilde değerlendir, sonra KAP haberini yorumla. 
+- Sana CANLI VERİ geldiyse, ÖNCE güncel fiyatı (RAKAM OLARAK KESİNLİKLE YAZ) ve durumu şık bir şekilde değerlendir, sonra KAP haberini yorumla.
 - Yanıtlarını her zaman detaylı, Markdown ile yapılandırılmış ve okunaklı ver.
 - Yatırım tavsiyesi verebilirsin ama riskleri, piyasa volatilitesini ve stop-loss hayat kurtarır gerçeğini hep vurgula.
 - Veri yoksa bile "veri ulaşmadı", "API patladı" gibi cümleler ASLA KULLANMA. Doğal bir şekilde sohbete devam et.
