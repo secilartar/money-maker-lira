@@ -195,9 +195,9 @@ def get_fon_info(ticker: str) -> str:
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
-        # DÜZELTME 3: Cache session eklendi
-        df_daily = yf.download(symbol, period="10d", interval="1d", progress=False, auto_adjust=True, session=yf_session)
-        df_weekly = yf.download(symbol, period="1mo", interval="1wk", progress=False, auto_adjust=True, session=yf_session)
+# yfinance kendi önbelleğini yöneteceği için session parametresi kaldırıldı
+        df_daily = yf.download(symbol, period="10d", interval="1d", progress=False, auto_adjust=True)
+        df_weekly = yf.download(symbol, period="1mo", interval="1wk", progress=False, auto_adjust=True)
 
         if df_daily.empty or df_weekly.empty:
             return ""
