@@ -90,19 +90,15 @@ def extract_tickers(text: str) -> list[str]:
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
-        df = yf.download(
-            symbol,
-            period="15d",
-            interval="1d",
-            progress=False,
-            threads=False,
-            auto_adjust=True
-        )
-
+        stock = yf.Ticker(symbol)
+        
+        # En güvenilir yöntem: history + son satırı zorla al
+        df = stock.history(period="1mo", interval="1d", auto_adjust=True)
+        
         if df.empty:
-            stock = yf.Ticker(symbol)
-            df = stock.history(period="15d", interval="1d", auto_adjust=True)
-
+            # Alternatif
+            df = yf.download(symbol, period="1mo", interval="1d", progress=False, threads=False)
+        
         if df.empty:
             return ""
 
@@ -110,12 +106,12 @@ def get_stock_info(ticker: str) -> str:
             df.columns = df.columns.get_level_values(0)
 
         df = df.dropna(subset=["Close"])
-        if df.empty:
+        if len(df) < 2:
             return ""
 
         # En son iki günü al
         last = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else last
+        prev = df.iloc[-2]
 
         price = float(last["Close"])
         prev_close = float(prev["Close"])
@@ -123,41 +119,27 @@ def get_stock_info(ticker: str) -> str:
         change_pct = (change / prev_close * 100) if prev_close else 0
         volume = int(last["Volume"]) if "Volume" in last and pd.notna(last["Volume"]) else 0
 
-        try:
-            last_date = last.name.strftime("%Y-%m-%d") if hasattr(last.name, "strftime") else str(last.name)[:10]
-        except Exception:
-            last_date = str(df.index[-1])[:10]
+        last_date = last.name.strftime("%Y-%m-%d") if hasattr(last.name, "strftime") else str(last.name)[:10]
+        prev_date = prev.name.strftime("%Y-%m-%d") if hasattr(prev.name, "strftime") else str(prev.name)[:10]
 
-        # Eğer son tarih Cuma değilse ve bugün hafta sonuysa, bir önceki günü de kontrol et
-        # (bazen yfinance Cuma'yı geç gösteriyor)
-        bugun = datetime.now(TR_TZ)
-        if bugun.weekday() >= 5 and len(df) >= 2:
-            # En güncel iki kapanışı da yaz ki Gemini doğru olanı seçsin
-            prev_date = prev.name.strftime("%Y-%m-%d") if hasattr(prev.name, "strftime") else str(prev.name)[:10]
-            text = (
-                f"**{ticker}**\n"
-                f"- En son kapanış: **{price:.2f} TL** ({last_date}) → Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-                f"- Bir önceki gün: **{prev_close:.2f} TL** ({prev_date})\n"
-            )
-        else:
-            text = (
-                f"**{ticker}**\n"
-                f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
-                f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-            )
-
+        text = (
+            f"**{ticker}**\n"
+            f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
+            f"- Önceki Kapanış: {prev_close:.2f} TL ({prev_date})\n"
+            f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
+        )
         if volume > 0:
             text += f"- Hacim: {volume:,}\n"
 
+        bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
             text += "- Not: BIST kapalı (hafta sonu).\n"
 
         return text
+
     except Exception as e:
         print(f"[yfinance hata] {ticker}: {e}")
         return ""
-
-
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
