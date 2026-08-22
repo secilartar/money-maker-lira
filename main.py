@@ -87,12 +87,12 @@ def extract_tickers(text: str) -> list[str]:
     return [c for c in set(candidates) if c not in blacklist]
 
 def get_stock_info(ticker: str) -> str:
-    """Günlük verinin Cuma'yı yutmasına karşı Haftalık veri ile doğrulama yapan Hibrit Versiyon"""
+    """Günlük verinin son günü yutmasına karşı Haftalık veri ile doğrulama yapan Hibrit Versiyon"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     
     try:
-        # 1. Hem günlük hem haftalık veriyi çekiyoruz
-        df_daily = yf.download(symbol, period="5d", interval="1d", progress=False, auto_adjust=True)
+        # DEĞİŞİKLİK 1: period="10d" yaptık (9 günlük uzun bayram tatilleri için sigorta)
+        df_daily = yf.download(symbol, period="10d", interval="1d", progress=False, auto_adjust=True)
         df_weekly = yf.download(symbol, period="1mo", interval="1wk", progress=False, auto_adjust=True)
 
         if df_daily.empty or df_weekly.empty:
@@ -115,14 +115,15 @@ def get_stock_info(ticker: str) -> str:
         price_daily = float(daily_last["Close"])
         price_weekly = float(weekly_last["Close"])
 
-        # HİBRİT KONTROL: Haftalık kapanış günlükten farklıysa, Yahoo Cuma'yı yutmuş demektir!
+        # HİBRİT KONTROL: Haftalık kapanış günlükten farklıysa, Yahoo son günü yutmuş demektir!
         if abs(price_weekly - price_daily) > 0.001:
-            price = price_weekly            # Gerçek son kapanış (Cuma: 690.50)
-            prev_close = price_daily        # Bir önceki sağlam gün (Perşembe: 694.00)
-            volume = 0                      # Hafta sonu hatasından dolayı hacim verisi yanıltıcı olmasın diye 0 geçiyoruz
-            last_date = "Cuma Kapanışı (Hafta sonu doğrulandı)"
+            price = price_weekly            # Gerçek son kapanış
+            prev_close = price_daily        # Bir önceki sağlam gün
+            volume = 0                      # Yanıltıcı olmasın diye hacim 0
+            # DEĞİŞİKLİK 2: Cuma yerine genel tatil ibaresi koyduk
+            last_date = "Son Kapanış (Tatil/Hafta sonu kurtarması)" 
         else:
-            # Hafta içi standart sorunsuz işleyiş
+            # Hafta içi veya tatil olmayan standart günlerdeki sorunsuz işleyiş
             price = price_daily
             prev_close = float(df_daily.iloc[-2]["Close"]) if len(df_daily) > 1 else price_daily
             volume = int(daily_last["Volume"]) if "Volume" in daily_last and pd.notna(daily_last["Volume"]) else 0
@@ -147,7 +148,7 @@ def get_stock_info(ticker: str) -> str:
         # Türkiye saatine göre hafta sonu uyarısı
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
-            text += "- Not: BIST kapalı. Fiyat haftalık paket verisinden özel olarak kurtarıldı.\n"
+            text += "- Not: BIST kapalı. Fiyat özel olarak doğrulandı.\n"
 
         return text
 
