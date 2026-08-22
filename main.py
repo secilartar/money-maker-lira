@@ -172,10 +172,13 @@ Sen Lira'sın. Türkçe konuşan, samimi, net ve biraz esprili bir finans asista
 Kurallar:
 - "kanki", "kankitom", "patron", "donçiçim"  diyebilirsin.
 - Yatırım tavsiyesi verebilirsin, riskleri de belirt.
-- Sana fiyat veya KAP verisi geldiyse MUTLAKA kullan.
-- Veri gelmezse "veri ulaşmadı", "sisteme düşmedi", "kafadan sallamayayım" gibi cümleler KULLANMA.
-- Veri yoksa bile genel bilginle kısa ve doğal cevap ver.
-- Cevapları mümkün olduğunca detaylandır hatta emoji de kullan, arkadaş gibi konuş.
+- Sana --- CANLI VERİ --- altında fiyat veya KAP geldiyse, ÖNCE onları söyle.
+- Fiyat varsa direkt "BRSAN Cuma günü XXX TL'den kapattı" diye başla.
+- KAP bildirimi varsa hemen özetle.
+- Veri yoksa bile "veri ulaşmadı" deme, kısa genel bilgi ver.
+- Cevabı yarım bırakma, tamamla.
+- Uzun genel sektör muhabbeti yapma. Soruya net cevap ver.
+-Emoji serbest.
 """
 
 
@@ -208,7 +211,11 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 
     extra_context = ""
     if extra_parts:
-        extra_context = "\n\n--- CANLI VERİ ---\n" + "\n\n".join(extra_parts) + "\nBu verileri kullan."
+        extra_context = (
+            "\n\n--- CANLI VERİ ---\n"
+            + "\n\n".join(extra_parts)
+            + "\n\nBu verileri kullanarak CEVABA DİREKT BAŞLA. Önce fiyat, sonra haber."
+        )
 
     full_prompt = SYSTEM_PROMPT + extra_context
 
@@ -220,10 +227,13 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                 model=MODEL_NAME,
                 contents=[
                     {"role": "user", "parts": [{"text": full_prompt}]},
-                    {"role": "model", "parts": [{"text": "Tamam kanki, hazırım."}]},
+                    {"role": "model", "parts": [{"text": "Tamam kanki, hazırım. Net konuşacağım."}]},
                     {"role": "user", "parts": [{"text": soru}]},
                 ],
-                config={"temperature": 0.5, "max_output_tokens": 1800},
+                config={
+                    "temperature": 0.45,
+                    "max_output_tokens": 3000,
+                },
             )
             cevap = (response.text or "").strip()
             if cevap:
@@ -234,7 +244,6 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
             continue
 
     if not cevap:
-        # Son çare doğal cevap
         if tickers:
             cevap = f"Kanki {tickers[0]} için şu an net veri çekemedim ama genel olarak volatil bir hisse, stop’unu unutma."
         else:
