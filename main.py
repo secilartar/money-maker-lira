@@ -91,14 +91,11 @@ def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
         stock = yf.Ticker(symbol)
-        
-        # En güvenilir yöntem: history + son satırı zorla al
         df = stock.history(period="1mo", interval="1d", auto_adjust=True)
-        
+
         if df.empty:
-            # Alternatif
             df = yf.download(symbol, period="1mo", interval="1d", progress=False, threads=False)
-        
+
         if df.empty:
             return ""
 
@@ -109,7 +106,6 @@ def get_stock_info(ticker: str) -> str:
         if len(df) < 2:
             return ""
 
-        # En son iki günü al
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
@@ -124,8 +120,8 @@ def get_stock_info(ticker: str) -> str:
 
         text = (
             f"**{ticker}**\n"
-            f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
-            f"- Önceki Kapanış: {prev_close:.2f} TL ({prev_date})\n"
+            f"- Veri kaynağındaki son kapanış: **{price:.2f} TL** ({last_date})\n"
+            f"- Bir önceki gün: {prev_close:.2f} TL ({prev_date})\n"
             f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
         )
         if volume > 0:
@@ -133,13 +129,17 @@ def get_stock_info(ticker: str) -> str:
 
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
-            text += "- Not: BIST kapalı (hafta sonu).\n"
+            text += (
+                "- Not: BIST kapalı (hafta sonu).\n"
+                "- Uyarı: Veri kaynağı bazen 1 işlem günü geriden geliyor. "
+                "Resmi Cuma kapanışı farklı olabilir.\n"
+            )
 
         return text
-
     except Exception as e:
         print(f"[yfinance hata] {ticker}: {e}")
         return ""
+        
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
