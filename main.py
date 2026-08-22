@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v2.8
-yf.download (analiz kodundaki gibi) + KAP + doğal cevap
+Money Maker — Lira'ya Sor API (Gemini) v3.0
+Temiz yapı + sert kurallar + hata gizleme
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import pandas as pd
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 KAP_API = "https://www.kap.org.tr/tr/api/disclosure/members/byCriteria"
 KAP_HEADERS = {
@@ -36,7 +36,7 @@ KAP_HEADERS = {
     "Origin": "https://www.kap.org.tr",
 }
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="2.8")
+app = FastAPI(title="Money Maker Lira'ya Sor", version="3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -82,19 +82,16 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_stock_info(ticker: str) -> str:
-    """Analiz kodundaki gibi yf.download kullanıyor – daha güvenilir"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
         df = yf.download(symbol, period="10d", interval="1d", progress=False, threads=False)
         if df.empty:
             return ""
-
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
-
         price = float(last["Close"])
         prev_close = float(prev["Close"])
         change = price - prev_close
@@ -109,10 +106,8 @@ def get_stock_info(ticker: str) -> str:
         )
         if volume:
             text += f"- Hacim: {volume:,}\n"
-
         if date.today().weekday() >= 5:
             text += "- Not: BIST kapalı (hafta sonu), Cuma kapanışıdır.\n"
-
         return text
     except Exception:
         return ""
@@ -127,10 +122,9 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
         "mkkMemberOidList": [],
         "subjectList": [],
     }
-
     data = []
     try:
-        with httpx.Client(timeout=10, follow_redirects=True) as client:
+        with httpx.Client(timeout=8, follow_redirects=True) as client:
             r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
             if r.status_code == 200:
                 data = r.json() if isinstance(r.json(), list) else []
@@ -169,16 +163,15 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
 SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, net ve biraz esprili bir finans asistanısın.
 
-Kurallar:
-- "kanki", "kankitom", "patron", "donçiçim"  diyebilirsin.
+ZORUNLU KURALLAR:
+- "kanki", "kankitom", "patron" diyebilirsin. Asla "hocam" deme.
 - Yatırım tavsiyesi verebilirsin, riskleri de belirt.
-- Sana --- CANLI VERİ --- altında fiyat veya KAP geldiyse, ÖNCE onları söyle.
-- Fiyat varsa direkt "BRSAN Cuma günü XXX TL'den kapattı" diye başla.
-- KAP bildirimi varsa hemen özetle.
-- Veri yoksa bile "veri ulaşmadı" deme, kısa genel bilgi ver.
-- Cevabı yarım bırakma, tamamla.
-- Uzun genel sektör muhabbeti yapma. Soruya net cevap ver.
--Emoji serbest.
+- Sana CANLI VERİ geldiyse ÖNCE fiyatı söyle, sonra KAP haberini özetle.
+- Veri yoksa bile "veri ulaşmadı", "sisteme düşmedi", "aracı kurum", "kap.org.tr", "uygulamadan kontrol et" gibi cümleler ASLA KULLANMA.
+- Veri yoksa kısa genel bilgi ver ve bitir.
+- Cevabı yarım bırakma.
+- Uzun sektör muhabbeti yapma. Soruya net cevap ver.
+- Emoji serbest.
 """
 
 
@@ -189,7 +182,7 @@ def health():
         "gemini": bool(GEMINI_API_KEY),
         "secret": bool(API_SECRET_KEY),
         "model": MODEL_NAME,
-        "version": "2.8"
+        "version": "3.0"
     }
 
 
@@ -209,15 +202,16 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if kap:
             extra_parts.append(kap)
 
-    extra_context = ""
+    # Veriyi user mesajına göm
     if extra_parts:
-        extra_context = (
-            "\n\n--- CANLI VERİ ---\n"
+        user_content = (
+            "--- CANLI VERİ ---\n"
             + "\n\n".join(extra_parts)
-            + "\n\nBu verileri kullanarak CEVABA DİREKT BAŞLA. Önce fiyat, sonra haber."
+            + "\n\n--- KULLANICI SORUSU ---\n"
+            + soru
         )
-
-    full_prompt = SYSTEM_PROMPT + extra_context
+    else:
+        user_content = soru
 
     cevap = None
     for attempt in range(2):
@@ -225,27 +219,25 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
             client = _get_client()
             response = client.models.generate_content(
                 model=MODEL_NAME,
-                contents=[
-                    {"role": "user", "parts": [{"text": full_prompt}]},
-                    {"role": "model", "parts": [{"text": "Tamam kanki, hazırım. Net konuşacağım."}]},
-                    {"role": "user", "parts": [{"text": soru}]},
-                ],
+                contents=user_content,
                 config={
-                    "temperature": 0.45,
+                    "system_instruction": SYSTEM_PROMPT,
+                    "temperature": 0.4,
                     "max_output_tokens": 3000,
                 },
             )
             cevap = (response.text or "").strip()
             if cevap:
                 break
-        except Exception:
+        except Exception as e:
+            print(f"Gemini hata (attempt {attempt+1}): {e}")
             if attempt == 0:
-                time.sleep(1.2)
+                time.sleep(1.5)
             continue
 
     if not cevap:
         if tickers:
-            cevap = f"Kanki {tickers[0]} için şu an net veri çekemedim ama genel olarak volatil bir hisse, stop’unu unutma."
+            cevap = f"Kanki {tickers[0]} için şu an net rakam çekemedim ama volatil bir hisse, stop’unu ihmal etme."
         else:
             cevap = "Kanki şu an biraz yoğunum, biraz sonra tekrar sor."
 
@@ -260,4 +252,4 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 
 @app.get("/")
 def root():
-    return HTMLResponse("<h2>Lira API v2.8</h2><p><a href='/health'>/health</a></p>")
+    return HTMLResponse("<h2>Lira API v3.0</h2><p><a href='/health'>/health</a></p>")
