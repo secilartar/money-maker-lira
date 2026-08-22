@@ -5,7 +5,7 @@ Money Maker — Lira'ya Sor API (Gemini) v3.2 (Firebase Fon Eklentili)
 """
 
 from __future__ import annotations
-
+import requests_cache
 import os
 import re
 import time
