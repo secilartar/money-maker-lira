@@ -5,7 +5,6 @@ Money Maker — Lira'ya Sor API (Gemini) v3.2 (Firebase Fon Eklentili)
 """
 
 from __future__ import annotations
-import requests_cache
 import os
 import re
 import time
@@ -69,9 +68,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# 1. DÜZELTME: Yahoo Finance için 1 saatlik önbellek (Cache) oturumu oluşturuyoruz
-yf_session = requests_cache.CachedSession('yfinance_cache', expire_after=3600)
 
 class SorRequest(BaseModel):
     soru: str = Field(..., min_length=2, max_length=2000)
