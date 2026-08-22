@@ -98,12 +98,15 @@ def _get_client():
 
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
-    blacklist = {
-        "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON",
-        "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI",
-        "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
-        "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM", "FON"
-    }
+blacklist = {
+    "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON",
+    "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI",
+    "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
+    "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM", "FON",
+    # YENİ EKLENENLER:
+    "HANGI", "FONLARDA", "FONLAR", "ICINDE", "PORTFOY", "TAŞIYAN",
+    "TASIYAN", "DETAY", "LISTE", "ANALIZ", "FIYAT", "HABER"
+}
     return [c for c in set(candidates) if c not in blacklist]
 
 
@@ -121,60 +124,69 @@ def get_fon_info(ticker: str) -> str:
         poz_ref = db.reference("veriler/Pozisyonlar")
 
         # 1) Önce HİSSE olarak dene (hisse_kodu ile)
-        by_hisse = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get() or {}
-
-        if by_hisse:
-            # Bu hisseyi taşıyan fonlar
+        by_hisse_raw = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get()
+        
+        if by_hisse_raw:
+            # GÜVENLİK YAMASI: Dict veya List olma durumunu yönetiyoruz
+            by_hisse_list = by_hisse_raw.values() if isinstance(by_hisse_raw, dict) else [x for x in by_hisse_raw if x]
+            
             lines = [f"**{ticker} hissesini taşıyan fonlar:**"]
-            # lot'a göre büyükten küçüğe sırala
             items = []
-            for _, p in by_hisse.items():
+            
+            for p in by_hisse_list:
                 fon = (p.get("fon_kodu") or "?").upper()
                 agirlik = p.get("agirlik") or 0
                 lot = p.get("lot_adedi") or 0
                 onceki = p.get("onceki_agirlik")
+                
                 degisim = None
                 if onceki is not None:
                     try:
                         degisim = float(agirlik) - float(onceki)
-                    except Exception:
+                    except ValueError:
                         pass
+                
                 items.append((fon, float(agirlik or 0), float(lot or 0), degisim))
 
-            items.sort(key=lambda x: x[2], reverse=True)  # lot'a göre
+            items.sort(key=lambda x: x[2], reverse=True)  # lot'a göre sırala
 
-            for fon, agirlik, lot, degisim in items[:15]:  # en fazla 15 fon
-                deg_str = f" | Değ: %{degisim:+.2f}" if degisim is not None else ""
-                lines.append(f"- {fon}: Ağr %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
+            for fon, agirlik, lot, degisim in items[:15]:
+                deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
+                lines.append(f"- {fon}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
 
             if len(items) > 15:
                 lines.append(f"... ve {len(items)-15} fon daha")
             return "\n".join(lines)
 
         # 2) Hisse bulunamadıysa FON olarak dene (fon_kodu ile)
-        by_fon = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get() or {}
-
-        if by_fon:
+        by_fon_raw = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get()
+        
+        if by_fon_raw:
+            by_fon_list = by_fon_raw.values() if isinstance(by_fon_raw, dict) else [x for x in by_fon_raw if x]
+            
             lines = [f"**{ticker} fonu portföy dağılımı:**"]
             items = []
-            for _, p in by_fon.items():
+            
+            for p in by_fon_list:
                 hisse = (p.get("hisse_kodu") or "?").upper()
                 agirlik = p.get("agirlik") or 0
                 lot = p.get("lot_adedi") or 0
                 onceki = p.get("onceki_agirlik")
+                
                 degisim = None
                 if onceki is not None:
                     try:
                         degisim = float(agirlik) - float(onceki)
-                    except Exception:
+                    except ValueError:
                         pass
+                        
                 items.append((hisse, float(agirlik or 0), float(lot or 0), degisim))
 
-            items.sort(key=lambda x: x[1], reverse=True)  # ağırlığa göre
+            items.sort(key=lambda x: x[1], reverse=True)  # ağırlığa göre sırala
 
             for hisse, agirlik, lot, degisim in items[:20]:
-                deg_str = f" | Değ: %{degisim:+.2f}" if degisim is not None else ""
-                lines.append(f"- {hisse}: Ağr %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
+                deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
+                lines.append(f"- {hisse}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
 
             return "\n".join(lines)
 
