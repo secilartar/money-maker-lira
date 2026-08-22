@@ -353,18 +353,19 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    for t in tickers[:3]:
-        price = get_stock_info(t)
-        if price:
-            extra_parts.append(price)
-            
-        kap = fetch_kap_for_ticker(t)
-        if kap:
-            extra_parts.append(kap)
-            
-        fon = get_fon_info(t)
-        if fon:
-            extra_parts.append(fon)
+for t in tickers[:3]:
+    price = get_stock_info(t)
+    if price:
+        extra_parts.append(price)
+           
+    kap = fetch_kap_for_ticker(t)
+    if kap:
+        extra_parts.append(kap)
+           
+    fon = get_fon_info(t)
+    print(f"[DEBUG FON] ticker={t} | len={len(fon)} | preview={fon[:180] if fon else 'BOŞ'}")
+    if fon:
+        extra_parts.append(fon)
 
     su_an = datetime.now(TR_TZ)
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
