@@ -6,3 +6,4 @@ pandas
 google-genai
 firebase-admin
 pydantic
+requests-cache
