@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v3.0
-Temiz yapı + sert kurallar + hata gizleme + Zaman Farkındalığı
+Money Maker — Lira'ya Sor API (Gemini) v3.1
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from datetime import datetime, date, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -36,10 +35,9 @@ KAP_HEADERS = {
     "Origin": "https://www.kap.org.tr",
 }
 
-# Türkiye Saati Sabiti (UTC+3)
 TR_TZ = timezone(timedelta(hours=3))
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="3.0")
+app = FastAPI(title="Money Maker Lira'ya Sor", version="3.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,10 +78,9 @@ def _get_client():
 
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
-    # YFinance'i boş yere meşgul etmemek için sık kullanılan kelimeleri engelliyoruz
     blacklist = {
-        "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON", 
-        "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI", 
+        "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON",
+        "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI",
         "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
         "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM"
     }
@@ -91,11 +88,8 @@ def extract_tickers(text: str) -> list[str]:
 
 
 def get_stock_info(ticker: str) -> str:
-    """Daha dayanıklı fiyat çekme (Render + hafta sonu için)"""
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
-    
     try:
-        # 1. Önce download dene
         df = yf.download(
             symbol,
             period="15d",
@@ -104,20 +98,17 @@ def get_stock_info(ticker: str) -> str:
             threads=False,
             auto_adjust=True
         )
-        
+
         if df.empty:
-            # 2. Fallback: Ticker.history
             stock = yf.Ticker(symbol)
             df = stock.history(period="15d", interval="1d", auto_adjust=True)
-        
+
         if df.empty:
             return ""
 
-        # MultiIndex düzelt
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # NaN satırları temizle (Özellikle hafta sonu Render sorunları için)
         df = df.dropna(subset=["Close"])
         if df.empty:
             return ""
@@ -130,8 +121,7 @@ def get_stock_info(ticker: str) -> str:
         change = price - prev_close
         change_pct = (change / prev_close * 100) if prev_close else 0
         volume = int(last["Volume"]) if "Volume" in last and pd.notna(last["Volume"]) else 0
-        
-        # Tarih
+
         try:
             last_date = last.name.strftime("%Y-%m-%d") if hasattr(last.name, "strftime") else str(last.name)[:10]
         except Exception:
@@ -145,13 +135,11 @@ def get_stock_info(ticker: str) -> str:
         if volume > 0:
             text += f"- Hacim: {volume:,}\n"
 
-        # Türkiye saatine göre hafta sonu notu
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
             text += "- Not: BIST kapalı (hafta sonu). Bu Cuma kapanışıdır.\n"
 
         return text
-
     except Exception as e:
         print(f"[yfinance hata] {ticker}: {e}")
         return ""
@@ -212,8 +200,8 @@ ZORUNLU KURALLAR:
 - Sana CANLI VERİ geldiyse, ÖNCE güncel fiyatı (RAKAM OLARAK KESİNLİKLE YAZ) ve durumu şık bir şekilde değerlendir, sonra KAP haberini yorumla.
 - Yanıtlarını her zaman detaylı, Markdown ile yapılandırılmış ve okunaklı ver.
 - Yatırım tavsiyesi verebilirsin ama riskleri, piyasa volatilitesini ve stop-loss hayat kurtarır gerçeğini hep vurgula.
-- Veri yoksa bile "veri ulaşmadı", "API patladı" gibi cümleler ASLA KULLANMA. Doğal bir şekilde sohbete devam et.
-- Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Eğer hafta sonuysa bunu bilerek, doğal bir şekilde "Kanki bugün piyasa kapalı dinleniyoruz ama dünkü tabloya göre..." gibi yorumlar yapabilirsin.
+- Veri yoksa bile "veri ulaşmadı", "API patladı", "aracı kurum", "kap.org.tr" gibi cümleler ASLA KULLANMA.
+- Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Hafta sonuysa doğal şekilde belirt.
 - Karakterine uygun emojiler kullan.
 """
 
@@ -225,7 +213,18 @@ def health():
         "gemini": bool(GEMINI_API_KEY),
         "secret": bool(API_SECRET_KEY),
         "model": MODEL_NAME,
-        "version": "3.0"
+        "version": "3.1"
+    }
+
+
+@app.get("/test-price")
+def test_price(hisse: str = "BRSAN"):
+    """Fiyatın gerçekten gelip gelmediğini test etmek için"""
+    info = get_stock_info(hisse.upper())
+    return {
+        "ticker": hisse.upper(),
+        "sonuc": info if info else "BOŞ DÖNDÜ",
+        "zaman": datetime.now(TR_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
 
@@ -245,12 +244,10 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if kap:
             extra_parts.append(kap)
 
-    # Lira'ya o anki zamanı gizlice söylüyoruz
     su_an = datetime.now(TR_TZ)
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     zaman_bilgisi = f"[SİSTEM BİLGİSİ: Bugün {su_an.strftime('%d.%m.%Y')} {gunler[su_an.weekday()]}, Saat: {su_an.strftime('%H:%M')}]"
 
-    # Veriyi user mesajına göm
     if extra_parts:
         user_content = (
             zaman_bilgisi + "\n\n"
@@ -288,7 +285,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if tickers:
             cevap = f"Kanki {tickers[0]} için şu an net rakam çekemedim ama volatil bir hisse, stop’unu ihmal etme."
         else:
-            cevap = "Kanki şu an biraz yoğunum, piyasa alev alev, biraz sonra tekrar sor."
+            cevap = "Kanki şu an biraz yoğunum, biraz sonra tekrar sor."
 
     return SorResponse(
         ok=True,
@@ -297,3 +294,8 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         thread_id="gemini",
         kaynak="gemini+data" if extra_parts else "gemini"
     )
+
+
+@app.get("/")
+def root():
+    return HTMLResponse("<h2>Lira API v3.1</h2><p><a href='/health'>/health</a> | <a href='/test-price'>/test-price</a></p>")
