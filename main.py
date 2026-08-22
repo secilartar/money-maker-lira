@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v3.2 (Firebase Fon Eklentili)
+Money Maker — Lira'ya Sor API (Gemini) v3.3 (Yfinance + Firebase Ham Veri Eklentili)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from firebase_admin import credentials, db
 from google import genai
 from google.genai import types
 
-# BEYAZ LİSTE İÇE AKTARMA (DÜZELTME 2)
+# BEYAZ LİSTE İÇE AKTARMA
 from constants import BEYAZ_LISTE
 
 # ================== AYARLAR ==================
@@ -58,13 +58,12 @@ KAP_HEADERS = {
 
 TR_TZ = timezone(timedelta(hours=3))
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="3.2")
+app = FastAPI(title="Money Maker Lira'ya Sor", version="3.3")
 
-# DÜZELTME: CORS çakışması giderildi
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
-    allow_credentials=False, # allow_origins="*" varken True olamaz!
+    allow_credentials=False, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -101,12 +100,32 @@ def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
     return [c for c in set(candidates) if c in BEYAZ_LISTE]
     
+
+# ================== YENİ: FIREBASE HİSSE HAM VERİSİ ==================
+def get_stock_info_from_firebase(ticker: str) -> str:
+    if not firebase_admin._apps:
+        return ""
+    
+    ticker = ticker.upper().strip()
+    try:
+        # Doğrudan ilgili hissenin altındaki tüm veriyi çekiyoruz
+        ref = db.reference(f"veriler/Hisseler/{ticker}")
+        data = ref.get()
+        
+        if not data:
+            return ""
+
+        # Lira'ya vermek üzere veriyi güzel görünümlü bir JSON stringine çeviriyoruz
+        ham_veri_metni = json.dumps(data, ensure_ascii=False, indent=2)
+        
+        return f"**{ticker} FİREBASE ÖZEL İNDİKATÖR VERİLERİ:**\n```json\n{ham_veri_metni}\n```"
+    except Exception as e:
+        print(f"[Firebase Hisse Hata] {ticker}: {e}")
+        return ""
+
+
+# ================== FIREBASE FON BİLGİSİ (Zaten Vardı) ==================
 def get_fon_info(ticker: str) -> str:
-    """
-    Firebase'den fon/pozisyon bilgisi çeker.
-    - ticker bir HİSSE ise → o hisseyi taşıyan fonları listeler
-    - ticker bir FON ise  → o fonun içindeki hisseleri listeler
-    """
     if not firebase_admin._apps:
         return ""
 
@@ -114,13 +133,9 @@ def get_fon_info(ticker: str) -> str:
     try:
         poz_ref = db.reference("veriler/Pozisyonlar")
 
-        # 1) Önce HİSSE olarak dene (hisse_kodu ile)
         by_hisse_raw = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get()
-        
         if by_hisse_raw:
-            # GÜVENLİK YAMASI: Dict veya List olma durumunu yönetiyoruz
             by_hisse_list = by_hisse_raw.values() if isinstance(by_hisse_raw, dict) else [x for x in by_hisse_raw if x]
-            
             lines = [f"**{ticker} hissesini taşıyan fonlar:**"]
             items = []
             
@@ -136,25 +151,19 @@ def get_fon_info(ticker: str) -> str:
                         degisim = float(agirlik) - float(onceki)
                     except ValueError:
                         pass
-                
                 items.append((fon, float(agirlik or 0), float(lot or 0), degisim))
 
-            items.sort(key=lambda x: x[2], reverse=True)  # lot'a göre sırala
+            items.sort(key=lambda x: x[2], reverse=True)
 
             for fon, agirlik, lot, degisim in items[:15]:
                 deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
                 lines.append(f"- {fon}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
 
-            if len(items) > 15:
-                lines.append(f"... ve {len(items)-15} fon daha")
             return "\n".join(lines)
 
-        # 2) Hisse bulunamadıysa FON olarak dene (fon_kodu ile)
         by_fon_raw = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get()
-        
         if by_fon_raw:
             by_fon_list = by_fon_raw.values() if isinstance(by_fon_raw, dict) else [x for x in by_fon_raw if x]
-            
             lines = [f"**{ticker} fonu portföy dağılımı:**"]
             items = []
             
@@ -170,28 +179,25 @@ def get_fon_info(ticker: str) -> str:
                         degisim = float(agirlik) - float(onceki)
                     except ValueError:
                         pass
-                        
                 items.append((hisse, float(agirlik or 0), float(lot or 0), degisim))
 
-            items.sort(key=lambda x: x[1], reverse=True)  # ağırlığa göre sırala
+            items.sort(key=lambda x: x[1], reverse=True)
 
             for hisse, agirlik, lot, degisim in items[:20]:
                 deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
                 lines.append(f"- {hisse}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
 
             return "\n".join(lines)
-
-        return ""  # hiçbir şey bulunamadı
-
+        return ""
     except Exception as e:
         print(f"[Firebase Hata] {ticker} okunamadı: {e}")
         return ""
 
 
+# ================== YFINANCE HİSSE FİYATI ==================
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
     try:
-# yfinance kendi önbelleğini yöneteceği için session parametresi kaldırıldı
         df_daily = yf.download(symbol, period="10d", interval="1d", progress=False, auto_adjust=True)
         df_weekly = yf.download(symbol, period="1mo", interval="1wk", progress=False, auto_adjust=True)
 
@@ -232,25 +238,23 @@ def get_stock_info(ticker: str) -> str:
         change_pct = (change / prev_close * 100) if prev_close else 0
 
         text = (
-            f"**{ticker}**\n"
+            f"**{ticker} YFINANCE CANLI PİYASA:**\n"
             f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
             f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
         )
-        
         if volume > 0:
             text += f"- Hacim: {volume:,}\n"
 
         bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
             text += "- Not: BIST kapalı. Fiyat özel olarak doğrulandı.\n"
-
         return text
-
     except Exception as e:
-        print(f"[yfinance hata - hibrit] {ticker}: {e}")
+        print(f"[yfinance hata] {ticker}: {e}")
         return ""
         
 
+# ================== KAP VERİLERİ ==================
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
     to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
@@ -303,14 +307,14 @@ Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabile
 
 ZORUNLU KURALLAR:
 - "kanki", "kankitom", "patron" diyebilirsin. Asla "hocam" deme.
-- Sana CANLI VERİ (Fiyat, KAP veya Fon Portföyü) geldiyse, önce güncel verileri değerlendir.
+- Sana CANLI VERİ (Fiyat, KAP, Özel İndikatörler veya Fon Portföyü) geldiyse, önce güncel verileri değerlendir.
+- Özellikle Kahin sinyalleri, haftalık/aylık performans ve SA13 gibi sana iletilen özel indikatör metriklerini yorumuna dahil et.
 - Yanıtlarını her zaman detaylı, Markdown ile yapılandırılmış ve okunaklı ver.
 - Yatırım tavsiyesi verebilirsin ama riskleri, piyasa volatilitesini ve stop-loss hayat kurtarır gerçeğini hep vurgula.
 - Veri yoksa bile "veri ulaşmadı", "API patladı", "aracı kurum", "kap.org.tr" gibi cümleler ASLA KULLANMA.
 - Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Hafta sonuysa doğal şekilde belirt.
 - Karakterine uygun emojiler kullan.
 """
-
 
 @app.get("/health")
 def health():
@@ -320,9 +324,8 @@ def health():
         "secret": bool(API_SECRET_KEY),
         "firebase": bool(FIREBASE_JSON_STR),
         "model": MODEL_NAME,
-        "version": "3.2"
+        "version": "3.3"
     }
-
 
 @app.get("/test-price")
 def test_price(hisse: str = "BRSAN"):
@@ -333,7 +336,6 @@ def test_price(hisse: str = "BRSAN"):
         "zaman": datetime.now(TR_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
-
 @app.post("/api/lira-sor", response_model=SorResponse)
 def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     _check_secret(x_api_key)
@@ -341,18 +343,25 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    # BURASI DÜZELTilmeli (4 boşluk girinti eksik):
+    # BURADAKİ GİRİNTİLER (INDENTATION) DÜZELTİLDİ
     for t in tickers[:3]:
+        # 1. Yfinance'den ham canlı fiyat
         price = get_stock_info(t)
         if price:
             extra_parts.append(price)
 
+        # 2. Firebase'den senin özel analiz verilerin (YENİ EKLENDİ)
+        fb_veri = get_stock_info_from_firebase(t)
+        if fb_veri:
+            extra_parts.append(fb_veri)
+
+        # 3. KAP bildirimleri
         kap = fetch_kap_for_ticker(t)
         if kap:
             extra_parts.append(kap)
 
+        # 4. Fon verileri
         fon = get_fon_info(t)
-        print(f"[DEBUG FON] ticker={t} | len={len(fon)} | preview={fon[:180] if fon else 'BOŞ'}")
         if fon:
             extra_parts.append(fon)
             
@@ -374,22 +383,16 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         user_content = zaman_bilgisi + "\n\n" + soru
 
     cevap = None
-# 3. DÜZELTME: 503 Hataları için Retry Mekanizması (Maksimum 3 Deneme)
     max_deneme = 3
     for attempt in range(max_deneme):
         try:
             client = _get_client()
-            
-            # 2. DÜZELTME: Doğrudan generate_content yerine chat session başlatılıyor. 
-            # AFC (Automatic Function Calling) hatalarını engeller.
             chat = client.chats.create(
                 model=MODEL_NAME,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     temperature=0.65,
                     max_output_tokens=3000,
-                    # İnternette arama yapmasını istersen aşağıdaki yorumu kaldır:
-                    # tools=[types.Tool(google_search=types.GoogleSearch())],
                 )
             )
             
@@ -397,12 +400,12 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
             cevap = (response.text or "").strip()
             
             if cevap:
-                break # Cevap alındıysa döngüden çık
+                break 
                 
         except Exception as e:
             print(f"Gemini hata (attempt {attempt+1}): {e}")
             if attempt < max_deneme - 1:
-                time.sleep(2) # 503 yenirse 2 saniye soluklanıp tekrar dener
+                time.sleep(2) 
             continue
             
     if not cevap:
@@ -421,4 +424,4 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
 
 @app.get("/")
 def root():
-    return HTMLResponse("<h2>Lira API v3.2</h2><p><a href='/health'>/health</a> | <a href='/test-price'>/test-price</a></p>")
+    return HTMLResponse("<h2>Lira API v3.3</h2><p><a href='/health'>/health</a> | <a href='/test-price'>/test-price</a></p>")
