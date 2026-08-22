@@ -21,6 +21,8 @@ import httpx
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
+# Mevcut importların arasına ekle
+from supabase import create_client, Client
 
 # YENİ SDK İÇİN GEREKLİ İÇE AKTARMALAR
 from google import genai
@@ -46,6 +48,18 @@ if FIREBASE_JSON_STR and not firebase_admin._apps:
         print("[SİSTEM] Firebase bağlantısı başarılı!")
     except Exception as e:
         print(f"[SİSTEM] Firebase başlatılamadı: {e}")
+
+# --- SUPABASE AYARLARI ---
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
+supabase: Optional[Client] = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("[SİSTEM] Supabase bağlantısı başarılı!")
+    except Exception as e:
+        print(f"[SİSTEM] Supabase başlatılamadı: {e}")
 
 KAP_API = "https://www.kap.org.tr/tr/api/disclosure/members/byCriteria"
 KAP_HEADERS = {
@@ -193,7 +207,36 @@ def get_fon_info(ticker: str) -> str:
         print(f"[Firebase Hata] {ticker} okunamadı: {e}")
         return ""
 
-
+# ================== SUPABASE SPOT/VİOP RAPORLARI ==================
+def get_supabase_reports(ticker: str) -> str:
+    if not supabase:
+        return ""
+    
+    ticker = ticker.upper().strip()
+    sonuc_metni = ""
+    
+    try:
+        # 1. Tablo: Piyasa Raporları (En son güncel satırı çekiyoruz)
+        rapor_resp = supabase.table("piyasa_raporlari").select("*").limit(1).execute()
+        if rapor_resp.data:
+            # Gelen veriyi metne çeviriyoruz
+            rapor_str = json.dumps(rapor_resp.data, ensure_ascii=False)
+            # Eğer sorulan hisse (ticker) bu metnin içinde kelime olarak geçiyorsa ekle
+            if re.search(rf"\b{ticker}\b", rapor_str):
+                sonuc_metni += f"**GÜNLÜK PİYASA RAPORUNDA {ticker} İLE İLGİLİ ŞU BİLGİLER GEÇİYOR:**\n```json\n{rapor_str}\n```\n\n"
+                
+        # 2. Tablo: Piyasa Yorumu (En son güncel satırı çekiyoruz)
+        yorum_resp = supabase.table("piyasa_yorumu").select("*").limit(1).execute()
+        if yorum_resp.data:
+            yorum_str = json.dumps(yorum_resp.data, ensure_ascii=False)
+            if re.search(rf"\b{ticker}\b", yorum_str):
+                sonuc_metni += f"**GÜNLÜK PİYASA YORUMUNDA {ticker} İÇİN MODEL/BALİNA NOTLARI:**\n```json\n{yorum_str}\n```\n\n"
+                
+        return sonuc_metni.strip()
+        
+    except Exception as e:
+        print(f"[Supabase Hata] {ticker}: {e}")
+        return ""
 # ================== YFINANCE HİSSE FİYATI ==================
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
@@ -314,6 +357,9 @@ ZORUNLU KURALLAR:
 - Veri yoksa bile "veri ulaşmadı", "API patladı", "aracı kurum", "kap.org.tr" gibi cümleler ASLA KULLANMA.
 - Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Hafta sonuysa doğal şekilde belirt.
 - Karakterine uygun emojiler kullan.
+- Sana GÜNLÜK PİYASA YORUMU veya RAPORU geldiğinde, bu raporlar genel piyasayı kapsayabilir. Sen SADECE kullanıcının sorduğu hisse ile ilgili (örneğin balina pozisyonları, short/long durumları veya model sinyalleri) kısımları süz ve yorumuna güçlü bir şekilde dahil et. İlgisiz hisseleri yoruma katma.
+- Veritabanı Sütun İsimlerini Gizle: Sana gelen JSON veya ham verideki başlıkları (örneğin: SA13Aort, FrkAy1, SA13Al_Hcm) kullanıcıya doğrudan parantez içinde veya metin olarak YAZMA. Bunları "Ağırlıklı Ortalama", "1 Aylık Performans", "Alım Hacmi" gibi tamamen doğal Türkçe ifadelerle açıkla.
+- Fon Değişimleri Aylıktır: Fon portföy dağılımları ve hisse ağırlık değişimleri her ay yayımlanır. Bu nedenle fon pozisyonlarındaki değişimlerden bahsederken "son dönemde" veya "geçenlerde" gibi muğlak ifadeler yerine her zaman "aylık bazda", "geçen aya göre" veya "son açıklanan aylık rapora göre" ifadelerini kullan.
 """
 
 @app.get("/health")
