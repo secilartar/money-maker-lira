@@ -235,27 +235,32 @@ def get_supabase_reports(ticker: str) -> str:
     sonuc_metni = ""
     
     try:
-        # 1. Tablo: Piyasa Raporları (En son güncel satırı çekiyoruz)
+        # 1. Piyasa Raporları (en son satır)
         rapor_resp = supabase.table("piyasa_raporlari").select("*").limit(1).execute()
         if rapor_resp.data:
-            # Gelen veriyi metne çeviriyoruz
-            rapor_str = json.dumps(rapor_resp.data, ensure_ascii=False)
-            # Eğer sorulan hisse (ticker) bu metnin içinde kelime olarak geçiyorsa ekle
-            if re.search(rf"\b{ticker}\b", rapor_str):
-                sonuc_metni += f"**GÜNLÜK PİYASA RAPORUNDA {ticker} İLE İLGİLİ ŞU BİLGİLER GEÇİYOR:**\n```json\n{rapor_str}\n```\n\n"
+            rapor_str = json.dumps(rapor_resp.data, ensure_ascii=False, indent=2)
+            sonuc_metni += (
+                f"**GÜNLÜK PİYASA RAPORU (Supabase - 21.08.2026 tarzı):**\n"
+                f"```json\n{rapor_str}\n```\n"
+                f"(Not: Sadece {ticker} ile ilgili kısımları kullan, diğerlerini yoksay)\n\n"
+            )
                 
-        # 2. Tablo: Piyasa Yorumu (En son güncel satırı çekiyoruz)
+        # 2. Piyasa Yorumu (en son satır)
         yorum_resp = supabase.table("piyasa_yorumu").select("*").limit(1).execute()
         if yorum_resp.data:
-            yorum_str = json.dumps(yorum_resp.data, ensure_ascii=False)
-            if re.search(rf"\b{ticker}\b", yorum_str):
-                sonuc_metni += f"**GÜNLÜK PİYASA YORUMUNDA {ticker} İÇİN MODEL/BALİNA NOTLARI:**\n```json\n{yorum_str}\n```\n\n"
+            yorum_str = json.dumps(yorum_resp.data, ensure_ascii=False, indent=2)
+            sonuc_metni += (
+                f"**GÜNLÜK PİYASA YORUMU (Supabase):**\n"
+                f"```json\n{yorum_str}\n```\n"
+                f"(Not: Sadece {ticker} ile ilgili model/balina notlarını kullan)\n\n"
+            )
                 
         return sonuc_metni.strip()
         
     except Exception as e:
         print(f"[Supabase Hata] {ticker}: {e}")
         return ""
+        
 # ================== YFINANCE HİSSE FİYATI ==================
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
