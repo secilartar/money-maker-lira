@@ -98,15 +98,15 @@ def _get_client():
 
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
-blacklist = {
-    "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON",
-    "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI",
-    "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
-    "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM", "FON",
-    # YENİ EKLENENLER:
-    "HANGI", "FONLARDA", "FONLAR", "ICINDE", "PORTFOY", "TAŞIYAN",
-    "TASIYAN", "DETAY", "LISTE", "ANALIZ", "FIYAT", "HABER"
-}
+    blacklist = {
+        "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON",
+        "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI",
+        "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
+        "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM", "FON",
+        "HANGI", "FONLARDA", "FONLAR", "ICINDE", "PORTFOY", "TASIYAN",
+        "DETAY", "LISTE", "ANALIZ", "FIYAT", "HABER", "RADAR", "ORTAK",
+        "PARAMIZI", "YATIRIRSAK", "OLURUZ", "KATEGORI", "POPULER"
+    }
     return [c for c in set(candidates) if c not in blacklist]
 
 
