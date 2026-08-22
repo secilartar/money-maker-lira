@@ -396,7 +396,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
                     temperature=0.65,
                     max_output_tokens=3000,
                     # İŞTE BURASI: Lira'nın internette arama yapmasını sağlar!
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
+# tools=[types.Tool(google_search=types.GoogleSearch())],
                 ),
             )
             cevap = (response.text or "").strip()
