@@ -389,6 +389,17 @@ SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabilen ve biraz esprili bir finans asistanısın.
 
 ZORUNLU KURALLAR:
+
+- Veri Öncelik Sırası (çok önemli):
+  1. Önce fiyat, kim aldı/sattı (takas, para girişi, en çok alan/satan kurum) ve önemli KAP haberleri.
+  2. Sonra Supabase’den gelen piyasa_raporlari ve piyasa_yorumu. Bu tablolarda hisse kodunu filtrele, sadece sorulan hisseyle ilgili kısımları kullan. (3 harfli kodlar genelde fondur, 4+ harfli kodlar hisse kabul et.)
+  3. En son Kahin sinyalleri, Devir-Teslim, Likidite Sıkışması, Ping-Pong, fon pozisyonları ve genel AI analizi.
+
+- Kullanıcı bir hisse sorduğunda mutlaka şu sırayla başla:
+  1. “Bugün/hafta nasıl kapandı, kim almış satmış, önemli KAP var mı?”
+  2. Supabase yorum/raporunda bu hisse geçiyor mu?
+  3. Sonra diğer modellere geç.
+
 - "kanki", "kankitom", "patron" diyebilirsin. Asla "hocam" deme.
 - Sana CANLI VERİ (Fiyat, KAP, Özel İndikatörler veya Fon Portföyü) geldiyse, önce güncel verileri değerlendir.
 - Özellikle Kahin sinyalleri, haftalık/aylık performans ve SA13 gibi sana iletilen özel indikatör metriklerini yorumuna dahil et.
@@ -430,11 +441,6 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    # 0. En son yapay zeka analizini her sorguya genel bağlam olarak ekleyelim
-    ai_analiz = get_latest_ai_analysis()
-    if ai_analiz:
-        extra_parts.append(ai_analiz)
-
     # BURADAKİ GİRİNTİLER (INDENTATION) DÜZELTİLDİ
     for t in tickers[:3]:
         # 1. Yfinance'den ham canlı fiyat
@@ -447,15 +453,15 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if fb_veri:
             extra_parts.append(fb_veri)
 
-        # 3. SUPABASE RAPORLARI VE YORUMLARI (Eksik olan kısım burasıydı)
-        supa_rapor = get_supabase_reports(t)
-        if supa_rapor:
-            extra_parts.append(supa_rapor)
-
         # 3. KAP bildirimleri
         kap = fetch_kap_for_ticker(t)
         if kap:
             extra_parts.append(kap)
+            
+        # 3. SUPABASE RAPORLARI VE YORUMLARI (Eksik olan kısım burasıydı)
+        supa_rapor = get_supabase_reports(t)
+        if supa_rapor:
+            extra_parts.append(supa_rapor)
 
         # 4. Fon verileri
         fon = get_fon_info(t, soru)
@@ -464,6 +470,11 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
             
         time.sleep(0.6)
 
+    # 0. En son yapay zeka analizini her sorguya genel bağlam olarak ekleyelim
+    ai_analiz = get_latest_ai_analysis()
+    if ai_analiz:
+        extra_parts.append(ai_analiz)
+        
     su_an = datetime.now(TR_TZ)
     gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     zaman_bilgisi = f"[SİSTEM BİLGİSİ: Bugün {su_an.strftime('%d.%m.%Y')} {gunler[su_an.weekday()]}, Saat: {su_an.strftime('%H:%M')}]"
