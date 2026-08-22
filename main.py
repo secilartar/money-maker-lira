@@ -30,7 +30,7 @@ from google.genai import types
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash") # Güncel modele çekildi
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # --- FIREBASE AYARLARI ---
 FIREBASE_URL = "https://money-maker-f59c4-default-rtdb.europe-west1.firebasedatabase.app"
