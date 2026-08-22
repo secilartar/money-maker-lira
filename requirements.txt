@@ -6,4 +6,4 @@ pandas
 google-genai
 firebase-admin
 pydantic
-requests-cache
+supabase==2.3.4
