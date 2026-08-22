@@ -110,7 +110,7 @@ def extract_tickers(text: str) -> list[str]:
         "YOK", "VAR", "MI", "MU", "MUYDUR", "OLUR", "OLURUZ", "YAPAR",
         "BAK", "GEL", "HADI", "SIMDI", "SONRA", "ONCEKI", "GUNCEL",
         "OLDU", "PATRON", "ACABA", "BILGI", "HABER", "GLOBAL", "DUNYA", 
-        "ONEMLI", "GELISME", "VARMI", "YOKMU", "ACIL", "YYIL", "YENI"
+        "ONEMLI", "GELISME", "VARMI", "YOKMU", "ACIL", "YYIL", "YENI", "KISA", "OLMALI"
     }
     return [c for c in set(candidates) if c not in blacklist]
 
