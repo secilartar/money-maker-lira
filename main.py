@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Money Maker — Lira'ya Sor API (Gemini) v3.0
-Temiz yapı + sert kurallar + hata gizleme
+Temiz yapı + sert kurallar + hata gizleme + Zaman Farkındalığı
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from datetime import date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -35,6 +35,9 @@ KAP_HEADERS = {
     "Referer": "https://www.kap.org.tr/tr/bildirim-sorgu",
     "Origin": "https://www.kap.org.tr",
 }
+
+# Türkiye Saati Sabiti (UTC+3)
+TR_TZ = timezone(timedelta(hours=3))
 
 app = FastAPI(title="Money Maker Lira'ya Sor", version="3.0")
 
@@ -77,7 +80,13 @@ def _get_client():
 
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
-    blacklist = {"KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON", "GUN", "HAFTA", "BUGUN"}
+    # YFinance'i boş yere meşgul etmemek için sık kullanılan kelimeleri engelliyoruz
+    blacklist = {
+        "KAP", "BIST", "TL", "USD", "TRY", "API", "KANKI", "LIRA", "SON", 
+        "GUN", "HAFTA", "BUGUN", "BANA", "SANA", "NASIL", "NEDEN", "HADI", 
+        "OLUR", "GIDER", "YARIN", "HISSE", "ALINIR", "MI", "YOKSA", "VAR",
+        "GIBI", "ICIN", "GORE", "KANKA", "HOCAM", "MERHABA", "SELAM"
+    }
     return [c for c in set(candidates) if c not in blacklist]
 
 
@@ -106,15 +115,19 @@ def get_stock_info(ticker: str) -> str:
         )
         if volume:
             text += f"- Hacim: {volume:,}\n"
-        if date.today().weekday() >= 5:
-            text += "- Not: BIST kapalı (hafta sonu), Cuma kapanışıdır.\n"
+            
+        # Hafta sonu kontrolünü Türkiye saatine göre yapıyoruz
+        bugun = datetime.now(TR_TZ)
+        if bugun.weekday() >= 5:
+            text += "- Not: BIST şu an kapalı (Hafta sonu). Fiyat Cuma kapanışıdır.\n"
+            
         return text
     except Exception:
         return ""
 
 
 def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
-    to_d = date.today()
+    to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
     payload = {
         "fromDate": from_d.isoformat(),
@@ -165,12 +178,12 @@ Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabile
 
 ZORUNLU KURALLAR:
 - "kanki", "kankitom", "patron" diyebilirsin. Asla "hocam" deme.
-- Sana CANLI VERİ geldiyse, ÖNCE güncel fiyatı ve durumu şık bir şekilde değerlendir, sonra KAP haberini yorumla. Sadece veriyi okuma, bu verinin hisse için ne anlama gelebileceğini analiz et.
-- Yanıtlarını her zaman detaylı, yapılandırılmış ve okunaklı ver. Alt başlıklar (###), madde işaretleri (-) ve kalın yazılar (**) kullan.
+- Sana CANLI VERİ geldiyse, ÖNCE güncel fiyatı ve durumu şık bir şekilde değerlendir, sonra KAP haberini yorumla. 
+- Yanıtlarını her zaman detaylı, Markdown ile yapılandırılmış ve okunaklı ver.
 - Yatırım tavsiyesi verebilirsin ama riskleri, piyasa volatilitesini ve stop-loss hayat kurtarır gerçeğini hep vurgula.
-- Veri yoksa bile "veri ulaşmadı", "sisteme düşmedi", "API patladı" gibi cümleler ASLA KULLANMA.
-- Cevapların finansal olarak doyurucu olsun. Yüzeysel geçme, derinleş.
-- Karakterine uygun emojiler (🚀, 📉, 💸, 🐃, 🐻) kullanmaktan çekinme.
+- Veri yoksa bile "veri ulaşmadı", "API patladı" gibi cümleler ASLA KULLANMA. Doğal bir şekilde sohbete devam et.
+- Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Eğer hafta sonuysa bunu bilerek, doğal bir şekilde "Kanki bugün piyasa kapalı dinleniyoruz ama dünkü tabloya göre..." gibi yorumlar yapabilirsin.
+- Karakterine uygun emojiler kullan.
 """
 
 
@@ -201,16 +214,22 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if kap:
             extra_parts.append(kap)
 
+    # Lira'ya o anki zamanı gizlice söylüyoruz
+    su_an = datetime.now(TR_TZ)
+    gunler = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    zaman_bilgisi = f"[SİSTEM BİLGİSİ: Bugün {su_an.strftime('%d.%m.%Y')} {gunler[su_an.weekday()]}, Saat: {su_an.strftime('%H:%M')}]"
+
     # Veriyi user mesajına göm
     if extra_parts:
         user_content = (
-            "--- CANLI VERİ ---\n"
+            zaman_bilgisi + "\n\n"
+            + "--- CANLI VERİ ---\n"
             + "\n\n".join(extra_parts)
             + "\n\n--- KULLANICI SORUSU ---\n"
             + soru
         )
     else:
-        user_content = soru
+        user_content = zaman_bilgisi + "\n\n" + soru
 
     cevap = None
     for attempt in range(2):
@@ -238,7 +257,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if tickers:
             cevap = f"Kanki {tickers[0]} için şu an net rakam çekemedim ama volatil bir hisse, stop’unu ihmal etme."
         else:
-            cevap = "Kanki şu an biraz yoğunum, biraz sonra tekrar sor."
+            cevap = "Kanki şu an biraz yoğunum, piyasa alev alev, biraz sonra tekrar sor."
 
     return SorResponse(
         ok=True,
@@ -247,8 +266,3 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         thread_id="gemini",
         kaynak="gemini+data" if extra_parts else "gemini"
     )
-
-
-@app.get("/")
-def root():
-    return HTMLResponse("<h2>Lira API v3.0</h2><p><a href='/health'>/health</a></p>")
