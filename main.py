@@ -149,14 +149,50 @@ def get_stock_info_from_firebase(ticker: str) -> str:
 
 
 # ================== FIREBASE FON BİLGİSİ (Zaten Vardı) ==================
-def get_fon_info(ticker: str) -> str:
+def get_fon_info(ticker: str, soru: str = "") -> str:
     if not firebase_admin._apps:
         return ""
 
     ticker = ticker.upper().strip()
+    soru_lower = soru.lower()
+
     try:
         poz_ref = db.reference("veriler/Pozisyonlar")
 
+        # Eğer soruda "fon" kelimesi geçiyorsa veya ticker 3 harfliyse → önce fon olarak dene
+        once_fon_dene = ("fon" in soru_lower) or (len(ticker) == 3)
+
+        if once_fon_dene:
+            # 1. Önce fonun kendi portföyünü çek
+            by_fon_raw = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get()
+            if by_fon_raw:
+                by_fon_list = by_fon_raw.values() if isinstance(by_fon_raw, dict) else [x for x in by_fon_raw if x]
+                lines = [f"**{ticker} fonu portföy dağılımı:**"]
+                items = []
+                
+                for p in by_fon_list:
+                    hisse = (p.get("hisse_kodu") or "?").upper()
+                    agirlik = p.get("agirlik") or 0
+                    lot = p.get("lot_adedi") or 0
+                    onceki = p.get("onceki_agirlik")
+                    
+                    degisim = None
+                    if onceki is not None:
+                        try:
+                            degisim = float(agirlik) - float(onceki)
+                        except ValueError:
+                            pass
+                    items.append((hisse, float(agirlik or 0), float(lot or 0), degisim))
+
+                items.sort(key=lambda x: x[1], reverse=True)
+
+                for hisse, agirlik, lot, degisim in items[:20]:
+                    deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
+                    lines.append(f"- {hisse}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
+
+                return "\n".join(lines)
+
+        # 2. Fon bulunamadıysa veya 3 harfli değilse → hisseyi taşıyan fonları getir (eski mantık)
         by_hisse_raw = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get()
         if by_hisse_raw:
             by_hisse_list = by_hisse_raw.values() if isinstance(by_hisse_raw, dict) else [x for x in by_hisse_raw if x]
@@ -185,33 +221,6 @@ def get_fon_info(ticker: str) -> str:
 
             return "\n".join(lines)
 
-        by_fon_raw = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get()
-        if by_fon_raw:
-            by_fon_list = by_fon_raw.values() if isinstance(by_fon_raw, dict) else [x for x in by_fon_raw if x]
-            lines = [f"**{ticker} fonu portföy dağılımı:**"]
-            items = []
-            
-            for p in by_fon_list:
-                hisse = (p.get("hisse_kodu") or "?").upper()
-                agirlik = p.get("agirlik") or 0
-                lot = p.get("lot_adedi") or 0
-                onceki = p.get("onceki_agirlik")
-                
-                degisim = None
-                if onceki is not None:
-                    try:
-                        degisim = float(agirlik) - float(onceki)
-                    except ValueError:
-                        pass
-                items.append((hisse, float(agirlik or 0), float(lot or 0), degisim))
-
-            items.sort(key=lambda x: x[1], reverse=True)
-
-            for hisse, agirlik, lot, degisim in items[:20]:
-                deg_str = f" | Değişim: %{degisim:+.2f}" if degisim is not None else ""
-                lines.append(f"- {hisse}: Ağırlık %{agirlik:.2f} | Lot: {int(lot):,}{deg_str}")
-
-            return "\n".join(lines)
         return ""
     except Exception as e:
         print(f"[Firebase Hata] {ticker} okunamadı: {e}")
@@ -449,7 +458,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
             extra_parts.append(kap)
 
         # 4. Fon verileri
-        fon = get_fon_info(t)
+        fon = get_fon_info(t, soru)
         if fon:
             extra_parts.append(fon)
             
