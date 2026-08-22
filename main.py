@@ -30,7 +30,7 @@ from google.genai import types
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # --- FIREBASE AYARLARI ---
 FIREBASE_URL = "https://money-maker-f59c4-default-rtdb.europe-west1.firebasedatabase.app"
@@ -108,7 +108,7 @@ def extract_tickers(text: str) -> list[str]:
         "SAAT", "SABAH", "AKSAM", "BUGUN", "YARIN", "HAFTA", "AY", "YIL",
         "ONCE", "SONRA", "ICIN", "GORE", "KADAR", "DAHA", "COK", "AZ",
         "YOK", "VAR", "MI", "MU", "MUYDUR", "OLUR", "OLURUZ", "YAPAR",
-        "BAK", "GEL", "HADI", "SIMDI", "SONRA", "ONCEKI", "GUNCEL"
+        "BAK", "GEL", "HADI", "SIMDI", "SONRA", "ONCEKI", "GUNCEL",
         "OLDU", "PATRON", "ACABA", "BILGI", "HABER", "GLOBAL", "DUNYA", 
         "ONEMLI", "GELISME", "VARMI", "YOKMU", "ACIL", "YYIL", "YENI"
     }
