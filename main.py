@@ -316,53 +316,71 @@ def get_stock_info(ticker: str) -> str:
         return ""
         
 
-# ================== KAP VERİLERİ ==================
-def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
+def fetch_kap_for_ticker(ticker: str, days: int = 7) -> str:
+    """Son X günün KAP ODA bildirimlerini çeker (hafta sonu için daha güvenli)."""
     to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
+    
     payload = {
         "fromDate": from_d.isoformat(),
         "toDate": to_d.isoformat(),
         "mkkMemberOidList": [],
         "subjectList": [],
     }
+    
     data = []
     try:
-        with httpx.Client(timeout=8, follow_redirects=True) as client:
+        with httpx.Client(timeout=12, follow_redirects=True) as client:
             r = client.post(KAP_API, json=payload, headers=KAP_HEADERS)
             if r.status_code == 200:
-                data = r.json() if isinstance(r.json(), list) else []
-    except Exception:
-        pass
+                raw = r.json()
+                data = raw if isinstance(raw, list) else []
+            else:
+                print(f"[KAP] HTTP {r.status_code} for {ticker}")
+    except Exception as e:
+        print(f"[KAP hata] {ticker}: {e}")
+        return ""
 
     if not data:
         return ""
 
     relevant = []
     ticker_up = ticker.upper()
+    
     for d in data:
         if d.get("disclosureClass") != "ODA":
             continue
+            
         stocks = d.get("relatedStocks") or d.get("stockCodes") or []
         if isinstance(stocks, str):
             stocks = [s.strip() for s in stocks.replace(",", " ").split()]
-        if ticker_up in [str(s).upper() for s in stocks]:
+        
+        stock_list = [str(s).upper().strip() for s in stocks]
+        
+        if ticker_up in stock_list:
             relevant.append(d)
 
     if not relevant:
         return ""
 
-    relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:4]
-    lines = [f"**{ticker} – Son KAP:**"]
+    # En yeni 5 taneyi al
+    relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:5]
+    
+    lines = [f"**{ticker} – Son KAP Bildirimleri (son {days} gün):**"]
     for d in relevant:
         when = (d.get("publishDate") or "")[:16]
         subj = (d.get("subject") or "").strip()
-        summ = (d.get("summary") or "").strip()[:120]
+        summ = (d.get("summary") or "").strip()[:180]
+        idx = d.get("disclosureIndex")
+        
         lines.append(f"- [{when}] {subj}")
         if summ:
-            lines.append(f"  {summ}")
+            lines.append(f"  Özet: {summ}")
+        if idx:
+            lines.append(f"  Link: https://www.kap.org.tr/tr/Bildirim/{idx}")
+    
     return "\n".join(lines)
-
+    
 # ================== FIREBANK EN SON YAPAY ZEKA ANALİZİ ==================
 def get_latest_ai_analysis() -> str:
     if not firebase_admin._apps:
