@@ -113,6 +113,7 @@ def get_stock_info(ticker: str) -> str:
         if df.empty:
             return ""
 
+        # En son iki günü al
         last = df.iloc[-1]
         prev = df.iloc[-2] if len(df) > 1 else last
 
@@ -127,17 +128,29 @@ def get_stock_info(ticker: str) -> str:
         except Exception:
             last_date = str(df.index[-1])[:10]
 
-        text = (
-            f"**{ticker}**\n"
-            f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
-            f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
-        )
+        # Eğer son tarih Cuma değilse ve bugün hafta sonuysa, bir önceki günü de kontrol et
+        # (bazen yfinance Cuma'yı geç gösteriyor)
+        bugun = datetime.now(TR_TZ)
+        if bugun.weekday() >= 5 and len(df) >= 2:
+            # En güncel iki kapanışı da yaz ki Gemini doğru olanı seçsin
+            prev_date = prev.name.strftime("%Y-%m-%d") if hasattr(prev.name, "strftime") else str(prev.name)[:10]
+            text = (
+                f"**{ticker}**\n"
+                f"- En son kapanış: **{price:.2f} TL** ({last_date}) → Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
+                f"- Bir önceki gün: **{prev_close:.2f} TL** ({prev_date})\n"
+            )
+        else:
+            text = (
+                f"**{ticker}**\n"
+                f"- Son Kapanış: **{price:.2f} TL** ({last_date})\n"
+                f"- Değişim: {change:+.2f} TL (%{change_pct:+.2f})\n"
+            )
+
         if volume > 0:
             text += f"- Hacim: {volume:,}\n"
 
-        bugun = datetime.now(TR_TZ)
         if bugun.weekday() >= 5:
-            text += "- Not: BIST kapalı (hafta sonu). Bu Cuma kapanışıdır.\n"
+            text += "- Not: BIST kapalı (hafta sonu).\n"
 
         return text
     except Exception as e:
