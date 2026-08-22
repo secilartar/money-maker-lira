@@ -29,7 +29,7 @@ from google import genai
 from google.genai import types
 
 # BEYAZ LİSTE İÇE AKTARMA
-from constants import BEYAZ_LISTE
+from constants import BEYAZ_LISTE, VERI_SOZLUGU
 
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
@@ -115,24 +115,34 @@ def extract_tickers(text: str) -> list[str]:
     return [c for c in set(candidates) if c in BEYAZ_LISTE]
     
 
-# ================== YENİ: FIREBASE HİSSE HAM VERİSİ ==================
+# ================== YENİ: FIREBASE HİSSE HAM VERİSİ (ÇEVİRİCİ İLE) ==================
 def get_stock_info_from_firebase(ticker: str) -> str:
     if not firebase_admin._apps:
         return ""
     
     ticker = ticker.upper().strip()
     try:
-        # Doğrudan ilgili hissenin altındaki tüm veriyi çekiyoruz
         ref = db.reference(f"veriler/Hisseler/{ticker}")
         data = ref.get()
         
         if not data:
             return ""
 
-        # Lira'ya vermek üzere veriyi güzel görünümlü bir JSON stringine çeviriyoruz
-        ham_veri_metni = json.dumps(data, ensure_ascii=False, indent=2)
+        # Gelen verinin anahtarlarındaki X_ veya SA13_ ön eklerini temizleyip Türkçeye çeviriyoruz
+        temiz_veri = {}
+        for key, val in data.items():
+            # 1. Başındaki X veya SA13 gibi kod/backup kalıntılarını regex ile siliyoruz
+            temiz_key = re.sub(r'^(X|SA13)', '', key, flags=re.IGNORECASE).upper()
+            
+            # 2. Sözlükte varsa Türkçe karşılığını alıyoruz, yoksa orijinal halini bırakıyoruz
+            turkce_key = VERI_SOZLUGU.get(temiz_key, key)
+            
+            temiz_veri[turkce_key] = val
+
+        # Artık Gemini'ye tamamen Türkçeleşmiş, temiz bir JSON gidiyor!
+        ham_veri_metni = json.dumps(temiz_veri, ensure_ascii=False, indent=2)
         
-        return f"**{ticker} FİREBASE ÖZEL İNDİKATÖR VERİLERİ:**\n```json\n{ham_veri_metni}\n```"
+        return f"**{ticker} İNDİKATÖR VERİLERİ:**\n```json\n{ham_veri_metni}\n```"
     except Exception as e:
         print(f"[Firebase Hisse Hata] {ticker}: {e}")
         return ""
@@ -344,7 +354,28 @@ def fetch_kap_for_ticker(ticker: str, days: int = 5) -> str:
             lines.append(f"  {summ}")
     return "\n".join(lines)
 
+# ================== FIREBANK EN SON YAPAY ZEKA ANALİZİ ==================
+def get_latest_ai_analysis() -> str:
+    if not firebase_admin._apps:
+        return ""
+    try:
+        ref = db.reference("YapayZekaAnaliz")
+        # Tarih anahtarları YYYY-MM-DD formatında olduğu için order_by_key() en günceltarihi verir
+        latest_data = ref.order_by_key().limit_to_last(1).get()
+        
+        if not latest_data:
+            return ""
 
+        # Gelen veri sözlük döner: {"2026-08-03": { ... içerik ... }}
+        for tarih, icerik in latest_data.items():
+            analiz_metni = json.dumps(icerik, ensure_ascii=False, indent=2)
+            return f"**EN SON YAPAY ZEKA PİYASA ANALİZİ ({tarih}):**\n```json\n{analiz_metni}\n```"
+            
+        return ""
+    except Exception as e:
+        print(f"[Firebase YapayZekaAnaliz Hata]: {e}")
+        return ""
+        
 SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabilen ve biraz esprili bir finans asistanısın.
 
@@ -358,8 +389,9 @@ ZORUNLU KURALLAR:
 - Sana verilen SİSTEM SAATİ VE TARİHİ bilgisini dikkate al. Hafta sonuysa doğal şekilde belirt.
 - Karakterine uygun emojiler kullan.
 - Sana GÜNLÜK PİYASA YORUMU veya RAPORU geldiğinde, bu raporlar genel piyasayı kapsayabilir. Sen SADECE kullanıcının sorduğu hisse ile ilgili (örneğin balina pozisyonları, short/long durumları veya model sinyalleri) kısımları süz ve yorumuna güçlü bir şekilde dahil et. İlgisiz hisseleri yoruma katma.
-- Veritabanı Sütun İsimlerini Gizle: Sana gelen JSON veya ham verideki başlıkları (örneğin: SA13Aort, FrkAy1, SA13Al_Hcm) kullanıcıya doğrudan parantez içinde veya metin olarak YAZMA. Bunları "Ağırlıklı Ortalama", "1 Aylık Performans", "Alım Hacmi" gibi tamamen doğal Türkçe ifadelerle açıkla.
+- Veritabanı Sütun İsimlerini Gizle: Sana gelen JSON veya ham verideki başlıkları (örneğin: Aort, FrkAy1, Al_Hcm) kullanıcıya doğrudan parantez içinde veya metin olarak YAZMA. Bunları "Ağırlıklı Ortalama", "1 Aylık Performans", "Alım Hacmi" gibi tamamen doğal Türkçe ifadelerle açıkla.
 - Fon Değişimleri Aylıktır: Fon portföy dağılımları ve hisse ağırlık değişimleri her ay yayımlanır. Bu nedenle fon pozisyonlarındaki değişimlerden bahsederken "son dönemde" veya "geçenlerde" gibi muğlak ifadeler yerine her zaman "aylık bazda", "geçen aya göre" veya "son açıklanan aylık rapora göre" ifadelerini kullan.
+- Kahin Kodları ve "Patron" Esprisi: Verilerde Kahin kodları (Z: Aşırı Riskli, KY2: Aşırı Ucuz, KY1: Ucuz, Y2: İskontolu, Y1: Makul, B1: Nötr, B2: Adil, K1: Primli, K2: Pahalı, KK1: Çok Pahalı, KK2: Aşırı Pahalı, KK3: Balon Bölgesi) karşına çıkabilir. Bu kodları mutlak birer kanun gibi ciddiye alma; eğlenceli ve takılarak yaklaş. "Patron buraya [Kod/Anlam] demiş ama tahtanın soluğu başka diyor kanki" ya da "Patrona kalırsa buralar balon ama veriler ne söyler ona bakalım" gibi hafiften patrona laf atarak esprili bir dille yorumla.
 """
 
 @app.get("/health")
@@ -389,6 +421,11 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
+    # 0. En son yapay zeka analizini her sorguya genel bağlam olarak ekleyelim
+    ai_analiz = get_latest_ai_analysis()
+    if ai_analiz:
+        extra_parts.append(ai_analiz)
+
     # BURADAKİ GİRİNTİLER (INDENTATION) DÜZELTİLDİ
     for t in tickers[:3]:
         # 1. Yfinance'den ham canlı fiyat
@@ -400,6 +437,11 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         fb_veri = get_stock_info_from_firebase(t)
         if fb_veri:
             extra_parts.append(fb_veri)
+
+        # 3. SUPABASE RAPORLARI VE YORUMLARI (Eksik olan kısım burasıydı)
+        supa_rapor = get_supabase_reports(t)
+        if supa_rapor:
+            extra_parts.append(supa_rapor)
 
         # 3. KAP bildirimleri
         kap = fetch_kap_for_ticker(t)
