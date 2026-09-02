@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Money Maker — Lira'ya Sor API (Gemini) v3.3 (Yfinance + Firebase Ham Veri Eklentili)
+Money Maker — Lira'ya Sor API (Gemini) v3.4 (Yfinance + Firebase Ham Veri Eklentili)
 """
 
 from __future__ import annotations
@@ -21,20 +21,25 @@ import httpx
 import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, db
-# Mevcut importların arasına ekle
 from supabase import create_client, Client
 
-# YENİ SDK İÇİN GEREKLİ İÇE AKTARMALAR
 from google import genai
 from google.genai import types
 
-# BEYAZ LİSTE İÇE AKTARMA
 from constants import BEYAZ_LISTE, VERI_SOZLUGU
 
 # ================== AYARLAR ==================
 API_SECRET_KEY = (os.environ.get("API_SECRET_KEY") or "").strip()
 GEMINI_API_KEY = (os.environ.get("GEMINI_API_KEY") or "").strip()
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
+# Fallback modeller (yoğunluk / 503 durumunda sırayla dener)
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+]
 
 # --- FIREBASE AYARLARI ---
 FIREBASE_URL = "https://money-maker-f59c4-default-rtdb.europe-west1.firebasedatabase.app"
@@ -72,15 +77,16 @@ KAP_HEADERS = {
 
 TR_TZ = timezone(timedelta(hours=3))
 
-app = FastAPI(title="Money Maker Lira'ya Sor", version="3.3")
+app = FastAPI(title="Money Maker Lira'ya Sor", version="3.4")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=False, 
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class SorRequest(BaseModel):
     soru: str = Field(..., min_length=2, max_length=2000)
@@ -110,10 +116,59 @@ def _get_client():
     return genai.Client(api_key=GEMINI_API_KEY)
 
 
+def generate_with_retry(user_content: str, max_attempts: int = 4):
+    """Model listesinde sırayla dener, 503/yüksek talep durumunda diğer modele geçer."""
+    last_err = None
+    client = _get_client()
+
+    for attempt in range(max_attempts):
+        model = GEMINI_MODELS[min(attempt, len(GEMINI_MODELS) - 1)]
+        try:
+            chat = client.chats.create(
+                model=model,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.65,
+                    max_output_tokens=8192,
+                )
+            )
+            response = chat.send_message(user_content)
+            cevap = (response.text or "").strip()
+
+            # Çok kısa geldiyse bir kez daha zorla
+            if cevap and len(cevap) < 900:
+                print(f"[Gemini-{model}] Cevap kısa geldi ({len(cevap)} karakter), tekrar deniyorum...")
+                response = chat.send_message(
+                    user_content + "\n\nLütfen cevabı yarıda kesme, sonuna kadar detaylı ve tamamlanmış şekilde yaz."
+                )
+                cevap = (response.text or "").strip()
+
+            if cevap:
+                print(f"[Gemini] Başarılı → {model}")
+                return cevap
+
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            retryable = any(x in msg for x in (
+                "503", "unavailable", "429", "resource_exhausted",
+                "high demand", "overloaded", "try again"
+            ))
+            print(f"[Gemini] {model} hata (attempt {attempt+1}): {e}")
+            if retryable and attempt < max_attempts - 1:
+                time.sleep(min(1.5 * (2 ** attempt), 12))
+                continue
+            if attempt < max_attempts - 1:
+                time.sleep(1.5)
+                continue
+
+    raise last_err if last_err else Exception("Tüm modeller başarısız")
+
+
 def extract_tickers(text: str) -> list[str]:
     candidates = re.findall(r'\b([A-Z]{3,6})\b', text.upper())
     return [c for c in set(candidates) if c in BEYAZ_LISTE]
-    
+
 
 # ================== YENİ: FIREBASE HİSSE HAM VERİSİ (ÇEVİRİCİ İLE) ==================
 def get_stock_info_from_firebase(ticker: str) -> str:
@@ -128,18 +183,12 @@ def get_stock_info_from_firebase(ticker: str) -> str:
         if not data:
             return ""
 
-        # Gelen verinin anahtarlarındaki X_ veya SA13_ ön eklerini temizleyip Türkçeye çeviriyoruz
         temiz_veri = {}
         for key, val in data.items():
-            # 1. Başındaki X veya SA13 gibi kod/backup kalıntılarını regex ile siliyoruz
             temiz_key = re.sub(r'^(X|SA13)', '', key, flags=re.IGNORECASE).upper()
-            
-            # 2. Sözlükte varsa Türkçe karşılığını alıyoruz, yoksa orijinal halini bırakıyoruz
             turkce_key = VERI_SOZLUGU.get(temiz_key, key)
-            
             temiz_veri[turkce_key] = val
 
-        # Artık Gemini'ye tamamen Türkçeleşmiş, temiz bir JSON gidiyor!
         ham_veri_metni = json.dumps(temiz_veri, ensure_ascii=False, indent=2)
         
         return f"**{ticker} İNDİKATÖR VERİLERİ:**\n```json\n{ham_veri_metni}\n```"
@@ -148,7 +197,7 @@ def get_stock_info_from_firebase(ticker: str) -> str:
         return ""
 
 
-# ================== FIREBASE FON BİLGİSİ (Zaten Vardı) ==================
+# ================== FIREBASE FON BİLGİSİ ==================
 def get_fon_info(ticker: str, soru: str = "") -> str:
     if not firebase_admin._apps:
         return ""
@@ -159,11 +208,9 @@ def get_fon_info(ticker: str, soru: str = "") -> str:
     try:
         poz_ref = db.reference("veriler/Pozisyonlar")
 
-        # Eğer soruda "fon" kelimesi geçiyorsa veya ticker 3 harfliyse → önce fon olarak dene
         once_fon_dene = ("fon" in soru_lower) or (len(ticker) == 3)
 
         if once_fon_dene:
-            # 1. Önce fonun kendi portföyünü çek
             by_fon_raw = poz_ref.order_by_child("fon_kodu").equal_to(ticker).get()
             if by_fon_raw:
                 by_fon_list = by_fon_raw.values() if isinstance(by_fon_raw, dict) else [x for x in by_fon_raw if x]
@@ -192,7 +239,6 @@ def get_fon_info(ticker: str, soru: str = "") -> str:
 
                 return "\n".join(lines)
 
-        # 2. Fon bulunamadıysa veya 3 harfli değilse → hisseyi taşıyan fonları getir (eski mantık)
         by_hisse_raw = poz_ref.order_by_child("hisse_kodu").equal_to(ticker).get()
         if by_hisse_raw:
             by_hisse_list = by_hisse_raw.values() if isinstance(by_hisse_raw, dict) else [x for x in by_hisse_raw if x]
@@ -226,6 +272,7 @@ def get_fon_info(ticker: str, soru: str = "") -> str:
         print(f"[Firebase Hata] {ticker} okunamadı: {e}")
         return ""
 
+
 # ================== SUPABASE SPOT/VİOP RAPORLARI ==================
 def get_supabase_reports(ticker: str) -> str:
     if not supabase:
@@ -235,7 +282,6 @@ def get_supabase_reports(ticker: str) -> str:
     sonuc_metni = ""
     
     try:
-        # 1. Piyasa Raporları (en son satır)
         rapor_resp = supabase.table("piyasa_raporlari").select("*").limit(1).execute()
         if rapor_resp.data:
             rapor_str = json.dumps(rapor_resp.data, ensure_ascii=False, indent=2)
@@ -245,7 +291,6 @@ def get_supabase_reports(ticker: str) -> str:
                 f"(Not: Sadece {ticker} ile ilgili kısımları kullan, diğerlerini yoksay)\n\n"
             )
                 
-        # 2. Piyasa Yorumu (en son satır)
         yorum_resp = supabase.table("piyasa_yorumu").select("*").limit(1).execute()
         if yorum_resp.data:
             yorum_str = json.dumps(yorum_resp.data, ensure_ascii=False, indent=2)
@@ -261,6 +306,7 @@ def get_supabase_reports(ticker: str) -> str:
         print(f"[Supabase Hata] {ticker}: {e}")
         return ""
         
+
 # ================== YFINANCE HİSSE FİYATI ==================
 def get_stock_info(ticker: str) -> str:
     symbol = ticker if ticker.endswith(".IS") else f"{ticker}.IS"
@@ -322,7 +368,7 @@ def get_stock_info(ticker: str) -> str:
         
 
 def fetch_kap_for_ticker(ticker: str, days: int = 7) -> str:
-    """Son X günün KAP ODA bildirimlerini çeker (hafta sonu için daha güvenli)."""
+    """Son X günün KAP ODA bildirimlerini çeker."""
     to_d = datetime.now(TR_TZ).date()
     from_d = to_d - timedelta(days=days)
     
@@ -368,7 +414,6 @@ def fetch_kap_for_ticker(ticker: str, days: int = 7) -> str:
     if not relevant:
         return ""
 
-    # En yeni 5 taneyi al
     relevant = sorted(relevant, key=lambda x: x.get("publishDate") or "", reverse=True)[:5]
     
     lines = [f"**{ticker} – Son KAP Bildirimleri (son {days} gün):**"]
@@ -386,19 +431,18 @@ def fetch_kap_for_ticker(ticker: str, days: int = 7) -> str:
     
     return "\n".join(lines)
     
-# ================== FIREBANK EN SON YAPAY ZEKA ANALİZİ ==================
+
+# ================== FIREBASE EN SON YAPAY ZEKA ANALİZİ ==================
 def get_latest_ai_analysis() -> str:
     if not firebase_admin._apps:
         return ""
     try:
         ref = db.reference("YapayZekaAnaliz")
-        # Tarih anahtarları YYYY-MM-DD formatında olduğu için order_by_key() en günceltarihi verir
         latest_data = ref.order_by_key().limit_to_last(1).get()
         
         if not latest_data:
             return ""
 
-        # Gelen veri sözlük döner: {"2026-08-03": { ... içerik ... }}
         for tarih, icerik in latest_data.items():
             analiz_metni = json.dumps(icerik, ensure_ascii=False, indent=2)
             return f"**EN SON YAPAY ZEKA PİYASA ANALİZİ ({tarih}):**\n```json\n{analiz_metni}\n```"
@@ -408,6 +452,7 @@ def get_latest_ai_analysis() -> str:
         print(f"[Firebase YapayZekaAnaliz Hata]: {e}")
         return ""
         
+
 SYSTEM_PROMPT = """
 Sen Lira'sın. Türkçe konuşan, samimi, veri odaklı, detaylı analiz yapabilen ve biraz esprili bir finans asistanısın.
 
@@ -462,6 +507,7 @@ ZORUNLU KURALLAR:
 - Kahin Kodları ve "Patron" Esprisi: Verilerde Kahin kodları (Z: Aşırı Riskli, KY2: Aşırı Ucuz, KY1: Ucuz, Y2: İskontolu, Y1: Makul, B1: Nötr, B2: Adil, K1: Primli, K2: Pahalı, KK1: Çok Pahalı, KK2: Aşırı Pahalı, KK3: Balon Bölgesi) karşına çıkabilir. Bu kodları mutlak birer kanun gibi ciddiye alma; eğlenceli ve takılarak yaklaş. "Patron buraya [Kod/Anlam] demiş ama tahtanın soluğu başka diyor kanki" ya da "Patrona kalırsa buralar balon ama veriler ne söyler ona bakalım" gibi hafiften patrona laf atarak esprili bir dille yorumla.
 """
 
+
 @app.get("/health")
 def health():
     return {
@@ -470,8 +516,9 @@ def health():
         "secret": bool(API_SECRET_KEY),
         "firebase": bool(FIREBASE_JSON_STR),
         "model": MODEL_NAME,
-        "version": "3.3"
+        "version": "3.4"
     }
+
 
 @app.get("/test-price")
 def test_price(hisse: str = "BRSAN"):
@@ -482,6 +529,7 @@ def test_price(hisse: str = "BRSAN"):
         "zaman": datetime.now(TR_TZ).strftime("%Y-%m-%d %H:%M")
     }
 
+
 @app.post("/api/lira-sor", response_model=SorResponse)
 def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     _check_secret(x_api_key)
@@ -489,14 +537,13 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
     tickers = extract_tickers(soru)
     extra_parts = []
 
-    # BURADAKİ GİRİNTİLER (INDENTATION) DÜZELTİLDİ
     for t in tickers[:3]:
         # 1. Yfinance'den ham canlı fiyat
         price = get_stock_info(t)
         if price:
             extra_parts.append(price)
 
-        # 2. Firebase'den senin özel analiz verilerin (YENİ EKLENDİ)
+        # 2. Firebase'den özel analiz verilerin
         fb_veri = get_stock_info_from_firebase(t)
         if fb_veri:
             extra_parts.append(fb_veri)
@@ -506,19 +553,19 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         if kap:
             extra_parts.append(kap)
             
-        # 3. SUPABASE RAPORLARI VE YORUMLARI (Eksik olan kısım burasıydı)
+        # 4. SUPABASE RAPORLARI VE YORUMLARI
         supa_rapor = get_supabase_reports(t)
         if supa_rapor:
             extra_parts.append(supa_rapor)
 
-        # 4. Fon verileri
+        # 5. Fon verileri
         fon = get_fon_info(t, soru)
         if fon:
             extra_parts.append(fon)
             
         time.sleep(0.6)
 
-    # 0. En son yapay zeka analizini her sorguya genel bağlam olarak ekleyelim
+    # En son yapay zeka analizini genel bağlam olarak ekle
     ai_analiz = get_latest_ai_analysis()
     if ai_analiz:
         extra_parts.append(ai_analiz)
@@ -539,39 +586,11 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         user_content = zaman_bilgisi + "\n\n" + soru
 
     cevap = None
-    max_deneme = 3
-    for attempt in range(max_deneme):
-        try:
-            client = _get_client()
-            chat = client.chats.create(
-                model=MODEL_NAME,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.65,
-                    max_output_tokens=8192,
-                )
-            )
-            
-            response = chat.send_message(user_content)
-            cevap = (response.text or "").strip()
-            
-            # Cevap çok kısa geldiyse veya yarıda kesilmiş gibi görünüyorsa bir kez daha dene
-            if cevap and len(cevap) < 900:
-                print(f"[Gemini] Cevap kısa geldi ({len(cevap)} karakter), tekrar deniyorum...")
-                response = chat.send_message(
-                    user_content + "\n\nLütfen cevabı yarıda kesme, sonuna kadar detaylı ve tamamlanmış şekilde yaz."
-                )
-                cevap = (response.text or "").strip()
-            
-            if cevap:
-                break 
-                
-        except Exception as e:
-            print(f"Gemini hata (attempt {attempt+1}): {e}")
-            if attempt < max_deneme - 1:
-                time.sleep(2) 
-            continue
-            
+    try:
+        cevap = generate_with_retry(user_content, max_attempts=4)
+    except Exception as e:
+        print(f"[Gemini] Tüm denemeler başarısız: {e}")
+
     if not cevap:
         if tickers:
             cevap = f"Kanki {tickers[0]} için şu an net rakam çekemedim ama volatil bir varlık, stop’unu ihmal etme."
@@ -586,6 +605,7 @@ def lira_sor(req: SorRequest, x_api_key: Optional[str] = Header(None)):
         kaynak="gemini+data" if extra_parts else "gemini"
     )
 
+
 @app.get("/")
 def root():
-    return HTMLResponse("<h2>Lira API v3.3</h2><p><a href='/health'>/health</a> | <a href='/test-price'>/test-price</a></p>")
+    return HTMLResponse("<h2>Lira API v3.4</h2><p><a href='/health'>/health</a> | <a href='/test-price'>/test-price</a></p>")
