@@ -62,7 +62,7 @@ BEYAZ_LISTE = {
     "UCAYM", "PAHOL", "VAKFA", "FRMPL", "DMLKTG", "ARFYE", "ZGYO", "DOFRB", "ECOGR", "AKHAN", 
     "NETCD", "LXGYO", "AAGYO", "ENPRA", "GENKM", "SVGYO", "MCARD", "ATATR", "BESTE", "EMPAE", 
     "SOHOE", "EKDMR", "ORZAX", "BETAE", "ALBTN", "GOLDA", "MASFN", "EKIM", "ISVEA", "METEN", 
-    "SARAE", "SSAAT", "KARCL", "QUICK", "CITAS", "KPEKS", "VEYAS", "TKNKA",
+    "SARAE", "SSAAT", "KARCL", "QUICK", "CITAS", "KPEKS", "VEYAS", "TKNKA", "USHOL", "BKRGY", "INTET",
 
     # Fonlar ve EYF Kodları[cite: 5, 6]
     "BLH", "BND", "BOE", "BTL", "DJA", "EOZ", "EYZ", "FGA", "FGS", "FUS", "ILK", "KHO", "LTK", 
@@ -263,7 +263,7 @@ BEYAZ_LISTE = {
     "VED", "VEG", "VEH", "VEI", "VEK", "VEL", "VEO", "VEP", "VER", "VES", "VET", "VEU", "VEV", 
     "VEY", "VGA", "VGB", "VGC", "VGD", "VGE", "VGF", "VGG", "VGH", "VGK", "VGP", "VGT", "VGY", 
     "VGZ", "VKE", "VKJ", "VVA", "VVD", "VVE", "VVM", "VVU", "VVZ", "VYB", "YZD", "ZHB", "ZHD", 
-    "ZHE", "ZHF", "ZHG"
+    "ZHE", "ZHF", "ZHG", "EGA", "OAK", "ODY", "ZBY", "ZKL"
 }
 VERI_SOZLUGU = {
     "KOD": "Hisse kodu",
