@@ -63,6 +63,7 @@ BEYAZ_LISTE = {
     "NETCD", "LXGYO", "AAGYO", "ENPRA", "GENKM", "SVGYO", "MCARD", "ATATR", "BESTE", "EMPAE", 
     "SOHOE", "EKDMR", "ORZAX", "BETAE", "ALBTN", "GOLDA", "MASFN", "EKIM", "ISVEA", "METEN", 
     "SARAE", "SSAAT", "KARCL", "QUICK", "CITAS", "KPEKS", "VEYAS", "TKNKA", "USHOL", "BKRGY", "INTET",
+    "NETGL",
 
     # Fonlar ve EYF Kodları[cite: 5, 6]
     "BLH", "BND", "BOE", "BTL", "DJA", "EOZ", "EYZ", "FGA", "FGS", "FUS", "ILK", "KHO", "LTK", 
